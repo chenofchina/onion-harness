@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+frontend/node_modules/
+frontend/dist/
+onion_harness/app/static/*
+!onion_harness/app/static/.gitkeep
+.onion/
+*.log
+# build info
+*.tsbuildinfo
+
+# packaging output
+build/
+dist/
+
+# runtime data (never commit user settings, keys or task history)
+.onionharness/
+*.onion-db
+settings.json
