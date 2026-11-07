@@ -1,0 +1,13 @@
+# Normalise line endings in the repository so a Windows checkout and the
+# Linux CI runner agree. Text is stored with LF; Windows gets CRLF on checkout.
+* text=auto eol=lf
+
+# Binary assets must never be converted.
+*.ico binary
+*.png binary
+*.jpg binary
+*.woff2 binary
+
+# Generated bundles are not committed, but keep them binary if they ever are.
+*.min.js binary
+*.min.css binary
