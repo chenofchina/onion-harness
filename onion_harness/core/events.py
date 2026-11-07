@@ -61,6 +61,12 @@ class EventType(str, Enum):
     CONTEXT_USAGE = "context-usage"
     ERROR = "error"
 
+    # Long-term memory. Recall is silent in the transcript (the model simply
+    # already knows), but it is emitted so the monitor can show what was used
+    # and the user can audit what the system remembers about them.
+    MEMORY_RECALLED = "memory-recalled"
+    MEMORY_LEARNED = "memory-learned"
+
 
 @dataclass(frozen=True)
 class OnionEvent:

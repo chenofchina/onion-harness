@@ -7,6 +7,7 @@ import {
   type Bootstrap,
   type ChangeRecord,
   type McpToolRecord,
+  type MemoryRecord,
   type OnionEvent,
   type ProviderPreset,
   type RoundtableRosterEntry,
@@ -29,6 +30,7 @@ import { SidecarPreview, type PreviewMode } from './components/SidecarPreview'
 import { Segmented } from './components/PopoverMenu'
 import { TaskCardHeader, TaskEditor } from './components/TaskActions'
 import { ArchiveDialog, McpDialog } from './components/McpDialog'
+import { MemoryDialog } from './components/MemoryDialog'
 import { RoundtableDialog } from './components/RoundtableDialog'
 import { RoundtableView } from './components/RoundtableView'
 import { MinutesPanel } from './components/MinutesPanel'
@@ -88,8 +90,10 @@ function Shell() {
   const [busyChangeId, setBusyChangeId] = useState<string | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [dialog, setDialog] = useState<
-    'model' | 'settings' | 'history' | 'workspace' | 'archive' | 'mcp' | 'roundtable' | null
+    'model' | 'settings' | 'history' | 'workspace' | 'archive' | 'mcp' | 'memory' | 'roundtable' | null
   >(null)
+  const [memories, setMemories] = useState<MemoryRecord[]>([])
+  const [memoryBusy, setMemoryBusy] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [fatal, setFatal] = useState<string | null>(null)
   const [highlightedEventId, setHighlightedEventId] = useState<string | null>(null)
@@ -214,6 +218,13 @@ function Shell() {
         if (incoming.type === 'tool-call' || incoming.type === 'tool-approval') {
           setMonitorOpen(true)
         }
+        if (incoming.type === 'memory-learned') {
+          // Pick the new notes up without a full bootstrap round trip.
+          api
+            .memory()
+            .then((data) => setBoot((prev) => (prev ? { ...prev, memory: data.stats } : prev)))
+            .catch(() => undefined)
+        }
         if (incoming.type === 'task-created' || incoming.type === 'task-status') {
           if (incoming.payload.status !== 'completed' && incoming.payload.status !== 'failed') {
             setRunningTaskId(incoming.task_id)
@@ -267,6 +278,46 @@ function Shell() {
       )
     }
   }, [])
+
+  const memoryStats = boot?.memory
+
+  const loadMemories = useCallback(() => {
+    api
+      .memory()
+      .then((data) => {
+        setMemories(data.memories)
+        setBoot((prev) => (prev ? { ...prev, memory: data.stats } : prev))
+      })
+      .catch(() => undefined)
+  }, [])
+
+  const forgetMemory = useCallback(
+    (id: string) => {
+      setMemoryBusy(true)
+      api
+        .forgetMemory(id)
+        .then(() => {
+          setMemories((prev) => prev.filter((memory) => memory.id !== id))
+          loadMemories()
+        })
+        .catch((exc) => toast(exc instanceof Error ? exc.message : String(exc), 'error'))
+        .finally(() => setMemoryBusy(false))
+    },
+    [loadMemories, toast],
+  )
+
+  const purgeMemory = useCallback(() => {
+    setMemoryBusy(true)
+    api
+      .purgeMemory()
+      .then((result) => {
+        setMemories([])
+        loadMemories()
+        toast(`Forgot ${result.purged} stored note${result.purged === 1 ? '' : 's'}`)
+      })
+      .catch((exc) => toast(exc instanceof Error ? exc.message : String(exc), 'error'))
+      .finally(() => setMemoryBusy(false))
+  }, [loadMemories, toast])
 
   const refreshBoot = useCallback(() => {
     api
@@ -885,12 +936,17 @@ function Shell() {
           thinkingLabel={thinkingLabel}
           onChangeCount={proposals.length}
           mcpCount={mcpTools.length}
+          memoryCount={memoryStats?.total ?? 0}
           onNewTask={newTask}
           onNewRoundtable={openRoundtable}
           onSelectTask={selectTask}
           onOpenSettings={() => setDialog('settings')}
           onOpenHistory={() => setDialog('history')}
           onOpenMcp={() => setDialog('mcp')}
+          onOpenMemory={() => {
+            setDialog('memory')
+            loadMemories()
+          }}
           onPickModel={() => setDialog('model')}
           roundtableSeats={activeIsRoundtable ? roundtableState.seats : []}
           roundtableHostId={roundtableState.hostId}
@@ -1181,6 +1237,17 @@ function Shell() {
           onClose={() => setDialog(null)}
           onStart={startRoundtable}
           error={roundtableError}
+        />
+      )}
+      {dialog === 'memory' && (
+        <MemoryDialog
+          open
+          stats={memoryStats ?? null}
+          memories={memories}
+          onClose={() => setDialog(null)}
+          onForget={forgetMemory}
+          onPurge={purgeMemory}
+          busy={memoryBusy}
         />
       )}
       {dialog === 'mcp' && (

@@ -1,4 +1,4 @@
-import { ClockArrowUp, History, Plus, Puzzle, Settings2, SquarePen, Users } from 'lucide-react'
+import { BrainCircuit, ClockArrowUp, History, Plus, Puzzle, Settings2, SquarePen, Users } from 'lucide-react'
 import type { ProviderPreset, RoundtableSeatPublic, TaskRecord } from '../lib/api'
 import { DebaterList } from './DebaterList'
 import { LobeIcon } from './LobeIcon'
@@ -13,12 +13,14 @@ type Props = {
   thinkingLabel: string
   onChangeCount: number
   mcpCount: number
+  memoryCount: number
   onNewTask: () => void
   onNewRoundtable: () => void
   onSelectTask: (id: string) => void
   onOpenSettings: () => void
   onOpenHistory: () => void
   onOpenMcp: () => void
+  onOpenMemory: () => void
   onPickModel: () => void
   roundtableSeats?: RoundtableSeatPublic[]
   roundtableHostId?: string
@@ -37,12 +39,14 @@ export function Sidebar({
   thinkingLabel,
   onChangeCount,
   mcpCount,
+  memoryCount,
   onNewTask,
   onNewRoundtable,
   onSelectTask,
   onOpenSettings,
   onOpenHistory,
   onOpenMcp,
+  onOpenMemory,
   onPickModel,
   roundtableSeats = [],
   roundtableHostId = '',
@@ -128,6 +132,15 @@ export function Sidebar({
               <span>
                 {provider?.label || 'No provider'} · {thinkingLabel}
               </span>
+            </span>
+          )}
+        </button>
+        <button className="onion-footer" onClick={onOpenMemory} title="Long-term memory">
+          <BrainCircuit size={17} />
+          {!collapsed && (
+            <span className="onion-footer__label">
+              Memory
+              {memoryCount > 0 && <span className="impact-chip" style={{ marginLeft: 6 }}>{memoryCount}</span>}
             </span>
           )}
         </button>

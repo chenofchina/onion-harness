@@ -147,6 +147,15 @@ def _make_handler(service: OnionService, static_dir: Optional[Path]):
                 return self._json(service.roundtable_seat_thoughts(match.group(1)))
             if method == "GET" and path == "/api/mcp":
                 return self._json({"tools": service.mcp_tools()})
+            if method == "GET" and path == "/api/memory":
+                return self._json(
+                    {"stats": service.memory_stats(), "memories": service.memory_list()}
+                )
+            if method == "DELETE" and path == "/api/memory":
+                return self._json(service.memory_purge())
+            match = re.match(r"^/api/memory/([^/]+)$", path)
+            if match and method == "DELETE":
+                return self._json(service.memory_forget(match.group(1)))
             if method == "GET" and path == "/api/tasks/archived":
                 return self._json({"tasks": service.archived_tasks()})
             if method == "GET" and path == "/api/settings":

@@ -10,6 +10,8 @@ Public surface: :class:`MemoryStore` and :class:`Memory`.
 from onion_harness.memory.model import Memory, MemoryKind, new_memory
 from onion_harness.memory.store import MemoryStore, MemoryStoreError
 from onion_harness.memory.extract import MemoryExtractor
+from onion_harness.memory.bridge import MemoryBridge
+from onion_harness.memory.prompt import compose_memory_prompt
 
 __all__ = [
     "Memory",
@@ -18,4 +20,6 @@ __all__ = [
     "MemoryStore",
     "MemoryStoreError",
     "MemoryExtractor",
+    "MemoryBridge",
+    "compose_memory_prompt",
 ]

@@ -17,6 +17,12 @@ dependencies = [
     # Trusts the OS certificate store, so TLS-intercepting antivirus and
     # corporate proxies do not break every request.
     "truststore>=0.9",
+    # AES-256-GCM for the encrypted memory database.
+    "cryptography>=42",
+    # Windows Credential Manager access, where API keys and the master secret
+    # live. Windows-only, but declaring it unconditionally keeps the frozen
+    # build and CI identical on every platform.
+    "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

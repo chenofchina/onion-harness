@@ -45,25 +45,39 @@ def tokenize(text: str) -> List[str]:
     return tokens
 
 
-def index_text(text: str) -> str:
-    """The string stored in the FTS column: tokens separated by spaces."""
-    return " ".join(tokenize(text))
+def index_text(text: str, hasher=None) -> str:
+    """The string stored in the FTS column: tokens separated by spaces.
+
+    When ``hasher`` is given every token is replaced by its digest first. That
+    turns the index into a *blind index*: matching still works because the same
+    token always hashes the same way, but the database never contains the
+    original words.
+    """
+    tokens = tokenize(text)
+    if hasher is not None:
+        tokens = [hasher(token) for token in tokens]
+    return " ".join(tokens)
 
 
-def query_terms(query: str) -> List[str]:
+def query_terms(query: str, hasher=None) -> List[str]:
     """Tokens to search for, longest first so specific terms rank higher."""
     tokens = tokenize(query)
     # A latin word is more specific than a bigram; keep both, order stable.
-    return sorted(set(tokens), key=lambda token: (-len(token), token))
+    terms = sorted(set(tokens), key=lambda token: (-len(token), token))
+    if hasher is not None:
+        # Hash after sorting: digests are fixed-length, so ordering by the
+        # original term length is meaningless once hashed.
+        return [hasher(term) for term in terms]
+    return terms
 
 
-def build_match_expression(query: str) -> str:
+def build_match_expression(query: str, hasher=None) -> str:
     """An FTS5 MATCH expression: every term OR'd, quoted to avoid operators.
 
     OR rather than AND because recall matters more than precision here: a memory
     that shares one distinctive term is worth returning, and the ranker sorts it.
     """
-    terms = query_terms(query)
+    terms = query_terms(query, hasher=hasher)
     if not terms:
         return ""
     escaped = [f'"{term}"' for term in terms if '"' not in term]

@@ -1,4 +1,4 @@
-import { MonitorPlay, X } from 'lucide-react'
+import { Database, MonitorPlay, X } from 'lucide-react'
 import type { ChangeRecord, OnionEvent, UsagePayload } from '../lib/api'
 import { StatusBadge, ExecutorBadge } from './EventCards'
 import { StarChainGraph } from './StarChainGraph'
@@ -40,6 +40,13 @@ export function MonitorPanel({
   )
   const results = new Map(events.filter((e) => e.type === 'tool-result').map((e) => [e.payload.call_id, e]))
   const recentTools = toolCalls.slice(-6).reverse()
+
+  // Memory is silent in the transcript, so the monitor is where the user sees
+  // what was recalled for this run and what was learned from it.
+  const recalled = events.filter((e) => e.type === 'memory-recalled').slice(-1)[0]
+  const learned = events.filter((e) => e.type === 'memory-learned').slice(-1)[0]
+  const memoryCount = Number(recalled?.payload.count ?? 0)
+  const learnedKinds: string[] = (learned?.payload.kinds as string[]) || []
 
   const circumference = 2 * Math.PI * 34
   const offset = circumference * (1 - ratio)
@@ -91,6 +98,22 @@ export function MonitorPanel({
       </div>
 
       <StarChainGraph events={events} prompt={taskPrompt} onFocusEvent={onFocusEvent} />
+
+      <div className="onion-monitor__section">
+        <span className="onion-monitor__label">Memory</span>
+        <div className="tool-row">
+          <Database size={14} className="text-muted" />
+          <span className="tool-row__name">
+            {memoryCount > 0 ? `Recalled ${memoryCount} note${memoryCount === 1 ? '' : 's'}` : 'Nothing recalled'}
+          </span>
+          {memoryCount > 0 && <StatusBadge status="success" />}
+        </div>
+        {learnedKinds.length > 0 && (
+          <div className="text-muted" style={{ lineHeight: 1.6, marginTop: 6 }}>
+            Learned this run: {learnedKinds.join(', ')}
+          </div>
+        )}
+      </div>
 
       <div className="onion-monitor__section">
         <span className="onion-monitor__label">Tool activity</span>

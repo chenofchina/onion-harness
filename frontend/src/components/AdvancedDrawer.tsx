@@ -174,7 +174,8 @@ export function AdvancedDrawer({
                 </div>
                 <span className="field__hint">
                   <KeyRound size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
-                  Stored in ~/.onionharness/settings.json and never sent anywhere except the provider.
+                  Stored in the Windows credential manager, never in a settings file.
+                  Only the provider id is written to disk.
                   {provider.api_key_url ? ` Get a key at ${provider.api_key_url}` : ''}
                 </span>
               </div>
@@ -197,7 +198,11 @@ export function AdvancedDrawer({
 
           <div className="card-change__warn" style={{ color: 'var(--md-sys-color-on-surface-variant)', background: 'color-mix(in srgb, var(--md-sys-color-on-surface) 6%, transparent)' }}>
             <Cloud size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-            <span>Settings are written atomically to ~/.onionharness/settings.json.</span>
+            <span>
+              Settings are written atomically to ~/.onionharness/settings.json. API keys
+              are stored separately in the Windows credential manager, encrypted per user
+              account, and are never written to that file.
+            </span>
           </div>
         </div>
 

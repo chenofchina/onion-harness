@@ -172,25 +172,38 @@ class StoreTest(unittest.TestCase):
         self.store = MemoryStore(self.dir / "other.sqlite3")
 
     def test_text_is_not_written_in_plaintext_when_encrypted(self):
-        """The database file must not contain the memory's text."""
-        class Rot13Cipher:
+        """The database file must not contain the memory's text.
+
+        The cipher also has to blind the search index: an encrypted row with a
+        tokenised plaintext index beside it still leaks every word. The fake here
+        reverses text and hashes tokens so both paths are exercised without
+        depending on the API layer (which ``memory`` may not import).
+        """
+        import hashlib
+
+        class ReverseCipher:
             def encrypt(self, text: str) -> bytes:
                 return text.encode("utf-8")[::-1]
 
             def decrypt(self, raw: bytes) -> str:
                 return bytes(raw)[::-1].decode("utf-8")
 
+            def token_hash(self, token: str) -> str:
+                return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
         path = self.dir / "enc.sqlite3"
-        store = MemoryStore(path, cipher=Rot13Cipher())
+        store = MemoryStore(path, cipher=ReverseCipher())
         try:
             store.remember(new_memory("SECRETMARKER not in the file"))
         finally:
             store.close()
 
         raw = path.read_bytes()
+        # Both cases: the row is reversed, and the index holds only digests.
         self.assertNotIn(b"SECRETMARKER", raw)
+        self.assertNotIn(b"secretmarker", raw)
 
-        reopened = MemoryStore(path, cipher=Rot13Cipher())
+        reopened = MemoryStore(path, cipher=ReverseCipher())
         try:
             hits = reopened.recall("SECRETMARKER")
             self.assertEqual(len(hits), 1)

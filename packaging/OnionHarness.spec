@@ -53,6 +53,15 @@ hiddenimports += [
     "certifi",
     "idna",
     "truststore",
+    # Secret storage and the encrypted memory database. ``win32ctypes`` is not
+    # imported directly; it ships inside pywin32 and pyinstaller's win32 hook
+    # expects to find it, so naming it avoids an analysis warning.
+    "win32cred",
+    "win32api",
+    "win32ctypes",
+    "cryptography",
+    "cryptography.hazmat.primitives.ciphers.aead",
+    "cryptography.hazmat.primitives.kdf.pbkdf2",
 ]
 
 # Modules that must NOT be pulled in: the React tree and test-only packages.

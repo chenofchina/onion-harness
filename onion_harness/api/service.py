@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from onion_harness.api.bus import EventBus
+from onion_harness.api.secrets import SecretError, cipher_from_store
 from onion_harness.api.store import AppStore, default_data_dir
 from onion_harness.core.events import EventType, OnionEvent, event
 from onion_harness.core.primitives import Layer, Task, TaskKind
@@ -28,6 +29,7 @@ from onion_harness.harness.mcp_runtime import McpRuntime
 from onion_harness.harness.presets import THINKING_LEVELS, all_presets
 from onion_harness.harness.runtime import ModelConfig, OnionRuntime, build_model_config
 from onion_harness.ledger import ChangeLedger, ChangeRecord, LedgerError, LedgerStore
+from onion_harness.memory import MemoryBridge, MemoryStore
 from onion_harness.plugins import builtin_executors
 from onion_harness.plugins.base import BaseExecutor
 from onion_harness.plugins.cmd_executor import CmdExecutor
@@ -66,7 +68,10 @@ class OnionService:
         self.data_dir = Path(data_dir) if data_dir else default_data_dir()
         self.store = AppStore(self.data_dir)
         self.bus = EventBus()
-        self.settings = self.store.load_settings()
+        # Keys live in the OS credential store; the file only lists provider ids.
+        # This runs before anything reads settings so a legacy plaintext key is
+        # moved out on the first start after upgrading.
+        self.settings = self.store.migrate_plaintext_keys(self.store.load_settings())
 
         self.ledger = ChangeLedger(
             LedgerStore(self.data_dir / "ledger.sqlite3"),
@@ -83,6 +88,11 @@ class OnionService:
         self.mcp = McpRuntime(self.mcp_store)
         self._mcp_tools = self.mcp.load()
 
+        # Long-term memory. The key is derived from a random master secret kept
+        # in the OS credential store, so the database on disk is ciphertext even
+        # if the file is copied off this machine.
+        self.memory_store, self.memory = self._open_memory()
+
         self.runtime = OnionRuntime(
             ledger=self.ledger,
             executors=self.executors,
@@ -92,6 +102,7 @@ class OnionService:
             # fans events out. Emitting from both paths would duplicate them.
             emit=None,
             state_provider=lambda: self.ledger.state,
+            memory=self.memory,
         )
         self.runtime.set_output_listener(self._on_process_output)
         self.runtime.set_approval_listener(self._on_approval_event)
@@ -103,6 +114,26 @@ class OnionService:
         self._lock = threading.RLock()
 
     # -- lifecycle ----------------------------------------------------------
+    def _open_memory(self):
+        """Open the encrypted memory database, degrading safely.
+
+        If no credential store exists the database cannot be encrypted, and a
+        silent plaintext fallback would be worse than no memory at all. In that
+        case memory is disabled and the rest of the app works unchanged.
+        """
+        path = self.data_dir / "memory.sqlite3"
+        try:
+            cipher = cipher_from_store(self.store.vault.store)
+        except SecretError as exc:
+            logger.warning("memory disabled: no encryption key available (%s)", exc)
+            return None, None
+        try:
+            store = MemoryStore(path, cipher=cipher)
+        except Exception as exc:  # noqa: BLE001 - a corrupt file must not block start
+            logger.error("memory disabled: could not open %s (%s)", path, exc)
+            return None, None
+        return store, MemoryBridge(store)
+
     def start(self) -> None:
         if self._loop is not None:
             return
@@ -176,6 +207,11 @@ class OnionService:
         with self._lock:
             self._active.clear()
         self.ledger.close()
+        if self.memory_store is not None:
+            try:
+                self.memory_store.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     @staticmethod
     def _drain_ready_callbacks() -> None:
@@ -249,6 +285,7 @@ class OnionService:
             "elevation_levels": self.modes()["elevation_levels"],
             "thinking_slider": self.modes()["thinking_slider"],
             "mcp_tools": self.mcp_tools(),
+            "memory": self.memory_stats(),
             "tasks": self.store.load_tasks(),
             "archived": self.archived_tasks(),
             "history": [r.to_dict() for r in self.ledger.list_history()],
@@ -260,6 +297,31 @@ class OnionService:
     def _latest_version(self) -> int:
         history = self.ledger.list_history()
         return history[-1].version if history else 0
+
+    # -- memory -------------------------------------------------------------
+    def memory_stats(self) -> Dict[str, Any]:
+        if self.memory is None:
+            return {"enabled": False, "total": 0, "by_kind": {}}
+        stats = dict(self.memory.stats())
+        stats["enabled"] = True
+        return stats
+
+    def memory_list(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """What the system remembers, for the user to read and prune."""
+        return self.memory.recent(limit) if self.memory is not None else []
+
+    def memory_forget(self, memory_id: str) -> Dict[str, Any]:
+        if self.memory is None:
+            raise ApiError("long-term memory is disabled", status=409)
+        removed = self.memory.forget(str(memory_id))
+        if not removed:
+            raise ApiError("memory not found", status=404)
+        return {"forgotten": memory_id}
+
+    def memory_purge(self) -> Dict[str, Any]:
+        if self.memory is None:
+            raise ApiError("long-term memory is disabled", status=409)
+        return {"purged": self.memory.purge()}
 
     # -- settings -----------------------------------------------------------
     def get_settings(self) -> Dict[str, Any]:
@@ -280,9 +342,9 @@ class OnionService:
         }
         for key, value in (patch or {}).items():
             if key == "api_key" and patch.get("provider_id"):
-                keys = dict(self.settings.get("api_keys", {}))
-                keys[str(patch["provider_id"])] = str(value)
-                self.settings["api_keys"] = keys
+                self.settings = self.store.set_provider_key(
+                    self.settings, str(patch["provider_id"]), str(value)
+                )
             elif key == "base_url" and patch.get("provider_id"):
                 urls = dict(self.settings.get("base_urls", {}))
                 override = str(value or "").strip()
@@ -292,9 +354,10 @@ class OnionService:
                     urls.pop(str(patch["provider_id"]), None)
                 self.settings["base_urls"] = urls
             elif key == "api_keys" and isinstance(value, dict):
-                keys = dict(self.settings.get("api_keys", {}))
-                keys.update({str(k): str(v) for k, v in value.items()})
-                self.settings["api_keys"] = keys
+                for provider_id, api_key in value.items():
+                    self.settings = self.store.set_provider_key(
+                        self.settings, str(provider_id), str(api_key)
+                    )
             elif key in allowed:
                 clamped = _clamp_setting(key, value)
                 if clamped is not _INVALID:
@@ -311,11 +374,13 @@ class OnionService:
         return self.store.public_settings(self.settings)
 
     def clear_api_key(self, provider_id: str) -> Dict[str, Any]:
-        keys = dict(self.settings.get("api_keys", {}))
-        keys.pop(provider_id, None)
-        self.settings["api_keys"] = keys
+        self.settings = self.store.clear_provider_key(self.settings, str(provider_id))
         self.settings = self.store.save_settings(self.settings)
         return self.store.public_settings(self.settings)
+
+    def _keys(self) -> Dict[str, str]:
+        """Live key values from the credential store, for provider construction."""
+        return self.store.provider_keys(self.settings)
 
     # -- tasks --------------------------------------------------------------
     def create_roundtable(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -335,7 +400,7 @@ class OnionService:
         if not isinstance(raw_seats, list):
             raise ApiError("seats must be a list")
 
-        keys = self.settings.get("api_keys", {})
+        keys = self._keys()
         seats = []
         for index, raw in enumerate(raw_seats):
             if not isinstance(raw, dict):
@@ -427,7 +492,7 @@ class OnionService:
         it as an "Others" option that reveals base-URL and model fields.
         """
         presets = all_presets(self.ledger.state.get("model_providers", []))
-        configured = set(self.settings.get("api_keys", {}).keys())
+        configured = set(self.store.public_settings(self.settings)["configured_providers"])
         out = []
         for preset in presets:
             item = dict(preset)
@@ -506,7 +571,7 @@ class OnionService:
         if len(orchestrator.config.seats) >= MAX_SEATS:
             raise ApiError(f"a roundtable can hold at most {MAX_SEATS} seats", status=400)
 
-        keys = self.settings.get("api_keys", {})
+        keys = self._keys()
         provider_id = str(payload.get("provider_id") or self.settings.get("provider_id") or "")
         preset = preset_for(provider_id)
         custom = bool(payload.get("custom")) or provider_id == "custom"
@@ -607,7 +672,7 @@ class OnionService:
         saved_url = overrides.get(str(model_raw.get("provider_id") or ""))
         if saved_url and not model_raw.get("base_url"):
             model_raw["base_url"] = saved_url
-        model = build_model_config(model_raw, self.settings.get("api_keys", {}))
+        model = build_model_config(model_raw, self._keys())
         if not model.model:
             raise ApiError("Select a model before sending a task.")
         if not model.api_key:
@@ -898,7 +963,7 @@ class OnionService:
             if context and context.get(key) is not None:
                 model_payload[key] = context[key]
 
-        model = build_model_config(model_payload, self.settings.get("api_keys", {}))
+        model = build_model_config(model_payload, self._keys())
         if not model.api_key:
             raise ApiError(f"No API key saved for {model.label}. Add one in Settings.", status=401)
 
@@ -975,7 +1040,7 @@ class OnionService:
             "mode": self.settings.get("mode"),
             "elevation": self.settings.get("elevation"),
         }
-        model = build_model_config(model_payload, self.settings.get("api_keys", {}))
+        model = build_model_config(model_payload, self._keys())
         if not model.api_key:
             raise ApiError(f"No API key saved for {model.label}. Add one in Settings.", status=401)
 

@@ -124,6 +124,7 @@ class OnionRuntime:
         tool_adapters: Optional[List[OnionTool]] = None,
         emit: Optional[Callable[[OnionEvent], None]] = None,
         state_provider: Optional[Callable[[], Dict[str, Any]]] = None,
+        memory=None,
     ) -> None:
         self._ledger = ledger
         self._executors = executors
@@ -134,6 +135,10 @@ class OnionRuntime:
         self._sessions: Dict[str, TaskSession] = {}
         self._running: Dict[str, asyncio.Task] = {}
         self._factory = SessionFactory(self._adapt_tool)
+        # Optional long-term memory port: ``recall(text)`` and
+        # ``learn(events, task_id)``. Injected by the API layer so the harness
+        # never touches the database file itself.
+        self._memory = memory
         # Set by the API layer to stream raw process output to the sidecar.
         self._output_listener = None
         # Set by the API layer to forward out-of-band approval events.
@@ -246,6 +251,19 @@ class OnionRuntime:
                 session.finished_at = time.time()
             if session.status == "running":
                 session.status = "completed"
+            # Learn from the finished run before announcing it, so a memory
+            # learned from this task is already available to the next one.
+            learned = self._learn_from(session)
+            if learned:
+                yield self._emit_into(
+                    session,
+                    event(
+                        EventType.MEMORY_LEARNED,
+                        task.id,
+                        count=len(learned),
+                        kinds=sorted({memory.kind.value for memory in learned}),
+                    ),
+                )
             yield self._emit_into(
                 session,
                 event(
@@ -257,6 +275,32 @@ class OnionRuntime:
                     usage=session.usage,
                 ),
             )
+
+    def _recall_for(self, session: TaskSession) -> List[Any]:
+        """Memories relevant to this task's prompt. Never raises."""
+        if self._memory is None:
+            return []
+        try:
+            return list(self._memory.recall(session.task.prompt))
+        except Exception:  # noqa: BLE001 - memory must never fail a run
+            logger.debug("memory recall failed", exc_info=True)
+            return []
+
+    def _learn_from(self, session: TaskSession) -> List[Any]:
+        """Persist what this run taught us. Never raises."""
+        if self._memory is None:
+            return []
+        events = [item.to_dict() for item in session.events]
+        # The runtime starts at TASK_CREATED; the user's own words live on the
+        # task, and they are the richest source of preferences and facts. Add
+        # them as the input event the extractor expects.
+        if not any(item.get("type") == "user-input" for item in events):
+            events.insert(0, {"type": "user-input", "payload": {"text": session.task.prompt}})
+        try:
+            return list(self._memory.learn(events, task_id=session.task.id))
+        except Exception:  # noqa: BLE001 - memory must never fail a run
+            logger.debug("memory learning failed", exc_info=True)
+            return []
 
     async def _run_inner(self, session: TaskSession) -> AsyncIterator[OnionEvent]:
         require_engine()
@@ -270,7 +314,21 @@ class OnionRuntime:
             )
 
         state = self._state_provider() or {}
-        system_prompt = self._compose_system_prompt(state, mode=model.mode)
+        recalled = self._recall_for(session)
+        memory_block = self._memory.prompt_for(recalled) if recalled else ""
+        system_prompt = self._compose_system_prompt(
+            state, mode=model.mode, memory_block=memory_block
+        )
+        if memory_block:
+            yield self._emit_into(
+                session,
+                event(
+                    EventType.MEMORY_RECALLED,
+                    task.id,
+                    count=len(recalled),
+                    memories=[memory.summary(120) for memory in recalled],
+                ),
+            )
         tools = self._build_tools(task, model=model, session=session)
         processor = EngineMessageTranslator(
             task.id, self._emit, context_window=model.context_window
@@ -544,7 +602,19 @@ class OnionRuntime:
         return adapt_tool(name, description, schema, handler)
 
     # -- prompt -------------------------------------------------------------
-    def _compose_system_prompt(self, state: Dict[str, Any], mode: Optional[str] = None) -> str:
+    def _compose_system_prompt(
+        self,
+        state: Dict[str, Any],
+        mode: Optional[str] = None,
+        memory_block: str = "",
+    ) -> str:
+        """Assemble the system channel, innermost concern first.
+
+        Order matters: the base instructions and tool surface, then recalled
+        memory as background, and finally the mode contract. Putting the mode
+        contract last means its safety rules are the final thing the model reads,
+        so recalled text can never appear to override them.
+        """
         from onion_harness.harness.modes import compose_mode_prompt
         from onion_harness.ledger.state import compose_system_prompt
 
@@ -566,7 +636,10 @@ class OnionRuntime:
         mcp_names = [tool.name for tool in self._extra_tools]
         if mcp_names:
             hint += "\nMCP tools available: " + ", ".join(mcp_names) + "\n"
-        return compose_mode_prompt(mode, (base + hint).strip())
+        composed = (base + hint).strip()
+        if memory_block:
+            composed = f"{composed}\n\n{memory_block}".strip()
+        return compose_mode_prompt(mode, composed)
 
     # -- event plumbing -----------------------------------------------------
     def _emit_into(self, session: TaskSession, ev: OnionEvent) -> OnionEvent:

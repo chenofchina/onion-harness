@@ -3,22 +3,39 @@
 Layout under the data directory::
 
     data/
-      settings.json          # app settings incl. per-provider API keys
+      settings.json          # app settings; holds key *names*, never key values
       tasks.json             # task metadata index
       tasks/<task_id>.jsonl  # full event stream per task
       ledger.sqlite3         # change ledger
+      memory.sqlite3         # encrypted long-term memory
 
 The API layer owns these files; the harness and inner layers know nothing about
 them.
+
+API keys never appear in ``settings.json``. They live in the OS credential
+manager and the file only records which providers have one (``key_providers``),
+because a provider id is not a secret and the GUI needs the list to show which
+rows are configured.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from onion_harness.api.secrets import (
+    KeyVault,
+    MemorySecretStore,
+    SecretError,
+    SecretStore,
+    default_secret_store,
+)
+
+logger = logging.getLogger("onion.store")
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "theme_mode": "system",
@@ -36,20 +53,55 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "base_urls": {},
     "mode": "standard",
     "elevation": "standard",
-    "api_keys": {},
+    # Provider ids that hold a key in the credential store. Values live there.
+    "key_providers": [],
 }
 
+# Legacy fields stripped on sight: an older build wrote key values into the file.
 _SECRET_FIELDS = ("api_key", "api_keys")
+
+_memory_stores: Dict[str, MemorySecretStore] = {}
+
+
+def _default_store(root: Path) -> SecretStore:
+    """The credential store to use, honouring an explicit override.
+
+    ``ONION_SECRET_STORE=memory`` exists for tests and portable runs: without it
+    every test run would write its fake keys into the developer's real Windows
+    credential manager, clobbering their actual provider keys. In that mode the
+    store is keyed by data directory so two tests never see each other's keys.
+    """
+    mode = os.environ.get("ONION_SECRET_STORE", "").strip().lower()
+    if mode == "memory":
+        key = str(root)
+        if key not in _memory_stores:
+            _memory_stores[key] = MemorySecretStore()
+        return _memory_stores[key]
+    try:
+        return default_secret_store()
+    except SecretError as exc:
+        # Keys cannot be persisted, but keeping them in memory is still better
+        # than writing them to disk: they survive the session, never the file.
+        logger.warning("credential store unavailable, keys are session-only: %s", exc)
+        key = str(root)
+        if key not in _memory_stores:
+            _memory_stores[key] = MemorySecretStore()
+        return _memory_stores[key]
 
 
 class AppStore:
     """Small JSON-backed store; atomic writes, guarded by a lock."""
 
-    def __init__(self, data_dir: str | Path) -> None:
+    def __init__(self, data_dir: str | Path, vault: Optional[KeyVault] = None) -> None:
         self.root = Path(data_dir)
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "tasks").mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._vault = vault or KeyVault(_default_store(self.root))
+
+    @property
+    def vault(self) -> KeyVault:
+        return self._vault
 
     # -- settings -----------------------------------------------------------
     def load_settings(self) -> Dict[str, Any]:
@@ -68,6 +120,13 @@ class AppStore:
     def save_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         merged = dict(DEFAULT_SETTINGS)
         merged.update(settings)
+        # Belt and braces: no key value may ever reach the file, whatever a
+        # caller put into the dict.
+        for field in _SECRET_FIELDS:
+            merged.pop(field, None)
+        merged["key_providers"] = sorted(
+            {str(pid) for pid in (merged.get("key_providers") or []) if str(pid).strip()}
+        )
         path = self.root / "settings.json"
         with self._lock:
             _atomic_write_json(path, merged)
@@ -76,12 +135,86 @@ class AppStore:
     def public_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         """Strip secrets before anything crosses the HTTP boundary."""
         public = {k: v for k, v in settings.items() if k not in _SECRET_FIELDS}
-        keys = settings.get("api_keys", {}) or {}
-        public["configured_providers"] = [pid for pid, value in keys.items() if value]
+        # Only report providers whose key is actually retrievable, so a stale
+        # name left behind after a manual credential deletion does not make the
+        # GUI claim a provider is configured.
+        public["configured_providers"] = [
+            pid for pid in (settings.get("key_providers") or []) if self._vault.has(pid)
+        ]
         # Overrides are not secret, and the Advanced drawer needs them to prefill
         # whatever the user typed for a provider or custom endpoint.
         public["base_urls"] = dict(settings.get("base_urls", {}) or {})
         return public
+
+    # -- keys ---------------------------------------------------------------
+    def provider_keys(self, settings: Dict[str, Any]) -> Dict[str, str]:
+        """The actual key values, read from the credential store on demand.
+
+        Nothing caches them: a key revoked in the OS UI takes effect immediately.
+        """
+        out: Dict[str, str] = {}
+        for provider_id in settings.get("key_providers") or []:
+            value = self._vault.get(str(provider_id))
+            if value:
+                out[str(provider_id)] = value
+        return out
+
+    def set_provider_key(
+        self, settings: Dict[str, Any], provider_id: str, api_key: str
+    ) -> Dict[str, Any]:
+        provider_id = str(provider_id or "").strip()
+        if not provider_id:
+            return settings
+        self._vault.set(provider_id, api_key)
+        return self._mark(settings, provider_id, self._vault.has(provider_id))
+
+    def clear_provider_key(self, settings: Dict[str, Any], provider_id: str) -> Dict[str, Any]:
+        provider_id = str(provider_id or "").strip()
+        if provider_id:
+            self._vault.delete(provider_id)
+            settings = self._mark(settings, provider_id, False)
+        return settings
+
+    def _mark(self, settings: Dict[str, Any], provider_id: str, present: bool) -> Dict[str, Any]:
+        names = {str(pid) for pid in (settings.get("key_providers") or [])}
+        if present:
+            names.add(provider_id)
+        else:
+            names.discard(provider_id)
+        settings = dict(settings)
+        settings["key_providers"] = sorted(names)
+        return settings
+
+    def migrate_plaintext_keys(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        """Move keys out of ``settings.json`` and into the credential store.
+
+        Runs on every start; on an already-migrated file it is a no-op. Keys are
+        written to the vault *before* the file is rewritten, so a crash in
+        between duplicates work rather than losing a key.
+        """
+        legacy = settings.get("api_keys") or {}
+        if not isinstance(legacy, dict) or not legacy:
+            return settings
+
+        moved = 0
+        for provider_id, value in legacy.items():
+            text = str(value or "").strip()
+            if not text:
+                continue
+            try:
+                self._vault.set(str(provider_id), text)
+            except SecretError as exc:
+                logger.error("could not migrate the key for %s: %s", provider_id, exc)
+                continue
+            settings = self._mark(settings, str(provider_id), True)
+            moved += 1
+
+        settings = dict(settings)
+        settings.pop("api_keys", None)
+        saved = self.save_settings(settings)
+        if moved:
+            logger.info("migrated %d API key(s) out of settings.json", moved)
+        return saved
 
     # -- tasks --------------------------------------------------------------
     def load_tasks(self) -> List[Dict[str, Any]]:

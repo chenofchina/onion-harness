@@ -254,6 +254,23 @@ export type Settings = {
   base_url?: string
 }
 
+export type MemoryRecord = {
+  id: string
+  text: string
+  kind: string
+  weight: number
+  source_task: string
+  created_at: number
+  last_used_at: number
+  use_count: number
+}
+
+export type MemoryStats = {
+  enabled: boolean
+  total: number
+  by_kind: Record<string, number>
+}
+
 export type Bootstrap = {
   settings: Settings
   providers: ProviderPreset[]
@@ -266,6 +283,7 @@ export type Bootstrap = {
   modes: ModeSpec[]
   elevation_levels: ElevationLevel[]
   mcp_tools: McpToolRecord[]
+  memory?: MemoryStats
   tasks: TaskRecord[]
   archived: TaskRecord[]
   history: Revision[]
@@ -367,6 +385,10 @@ export const api = {
   deleteMcp: (name: string) =>
     request<{ name: string; deleted: boolean }>(`/mcp/${name}`, { method: 'DELETE' }),
   mcpTools: () => request<{ tools: McpToolRecord[] }>('/mcp'),
+  memory: () => request<{ stats: MemoryStats; memories: MemoryRecord[] }>('/memory'),
+  forgetMemory: (id: string) =>
+    request<{ forgotten: string }>(`/memory/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  purgeMemory: () => request<{ purged: number }>('/memory', { method: 'DELETE' }),
   archivedTasks: () => request<{ tasks: TaskRecord[] }>('/tasks/archived'),
   roundtableRoster: () =>
     request<{ providers: RoundtableRosterEntry[] }>('/roundtable/roster'),

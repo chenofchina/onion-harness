@@ -326,6 +326,35 @@ written to `~/.onionharness/mcp/<name>/tool.py`, hot-loaded into the tool
 registry, and recorded in the change ledger, so it can be disabled, deleted or
 rolled back.
 
+### Long-term memory
+
+Memory runs silently: it is not a feature you switch on and manage, it is what
+makes the second conversation easier than the first.
+
+* **Learning happens when a task ends.** After each run the event stream is
+  scanned for durable statements — a stated preference ("以后都用 PowerShell"),
+  an environment fact (a path, a version), a repeated executor, a failure worth
+  not repeating. Extraction is local and rule-based, so it costs no tokens and is
+  deterministic enough to test.
+* **Recall happens before a request.** The prompt is used as a search query; the
+  best matches are appended to the **system channel**, before the mode contract,
+  so the Strict contract still reads as the final word on safety.
+* **Only the system channel changes.** No card, no banner, no extra turn. The
+  model simply already knows. The monitor shows what was recalled for the current
+  run; the **Memory** entry in the sidebar lists every stored note with the option
+  to forget one or clear all.
+
+Retrieval is FTS5 over overlapping CJK bigrams plus latin words, re-ranked by
+`bm25 × time-decayed weight`. Preferences never decay; events fall to a 30% floor
+so a stale failure cannot outrank a preference the user still holds.
+
+**Encryption is not optional.** Memory text is AES-256-GCM with a key derived
+from a random master secret in the Windows credential manager, and the search
+index stores keyed token digests rather than the tokens. The `.sqlite3` file
+therefore contains no readable word anywhere — not in the rows, not in the index.
+If no credential store is available the feature disables itself rather than
+writing plaintext.
+
 ## Roundtable
 
 A bounded multi-agent debate. The **Roundtable** button beside *New task* opens a
@@ -388,9 +417,16 @@ edge.
 Defaults to `~/.onionharness`, overridable with `ONION_DATA_DIR` or `--data-dir`:
 
 ```
-settings.json          settings + per-provider API keys (never returned to the GUI)
+settings.json          settings, plus the list of providers that have a key
 tasks.json             task index
 tasks/<id>.jsonl       full event stream per task
 ledger.sqlite3         change revisions, pending proposals, materialised state
+memory.sqlite3         long-term memory: AES-256-GCM ciphertext, blind search index
 mcp/<name>/tool.py     generated MCP tools (hot-loaded, ledger-audited)
+
+**API keys never appear in a file.** They are stored in the Windows credential
+manager (`win32cred`), encrypted by the OS for the current account. Only the
+provider *ids* are written to `settings.json`, because the GUI needs them to show
+which rows are configured. A plaintext `api_keys` block written by an older build
+is migrated into the credential store on first start and erased from the file.
 ```

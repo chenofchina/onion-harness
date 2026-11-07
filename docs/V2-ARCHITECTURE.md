@@ -353,19 +353,41 @@ class KeyringStore(SecretStore):             # keyring，需装包
 class MasterPasswordStore(SecretStore):      # 主密码 + AES-GCM 文件，最后回退
 ```
 
-`settings.json` 只存引用：
+**已落地**（不再只是设计）：连「引用名」都不需要单独存。`settings.json` 里只有一个
+`key_providers` 名单，列出哪些厂商配置过 key：
 
 ```json
-{ "api_keys": { "deepseek": { "keyref": "onion:provider:deepseek" } } }
+{ "key_providers": ["deepseek"] }
 ```
 
-**迁移**：首次启动时检测到明文字符串格式的 `api_keys`，自动迁到凭据管理器并**覆写**原文件。这一步必须有测试。
+读 key 时才去凭据库取（`CRED_PREFIX + provider_id`），所以凭据管理器里删掉条目后，
+界面立刻显示未配置，不存在「文件说配了、其实没有」的漂移。`AppStore.save_settings`
+会主动剥掉任何 `api_keys` 字段，即便调用方误塞进来也写不到磁盘。
+
+**迁移已实现并有测试**：`AppStore.migrate_plaintext_keys` 在服务构造时运行，把旧版
+明文 `api_keys` 逐条写入凭据库，**先写成功再改写文件**，中途崩溃只会重复而不会丢
+key。已有测试覆盖：明文不出现在文件里、迁移幂等、`public_settings` 只报告真的能取到
+的 key。
+
+**没有凭据管理器时**：不回退到明文。`_open_memory` 会直接停用长期记忆并在界面说明
+原因；API key 退化为仅本次会话内存有效，重启即失效。宁可少一个功能，也不落明文。
 
 ### 数据
 
-`cryptography` 的 AES-256-GCM，密钥由主密码经 PBKDF2-HMAC-SHA256（60 万轮）派生。
+`cryptography` 的 AES-256-GCM，密钥由凭据库里的 32 字节随机主密钥经
+PBKDF2-HMAC-SHA256（20 万轮）派生。每条记录用独立随机 nonce，nonce 前置在密文里，
+不单独建列。
 
-加密范围：记忆文本、会话事件流、任务 prompt。账本本身不加密（它只有配置快照，没有敏感数据），但会提示用户。
+加密范围（已实现）：**记忆文本**。
+
+**盲索引**：FTS5 要能比较词元，通常就得把词明文写进索引表——那样 `偏好` 会直接出现在
+`.sqlite3` 文件里。改成用独立的 HMAC 子密钥对每个词元取摘要后入索引，查询时同样取摘要。
+命中语义不变（词元精确匹配，bm25 排序照常），文件里则只剩十六进制摘要。测试
+`test_no_plaintext_anywhere_in_the_file` 逐词扫描原始字节验证这一点。
+
+**尚未加密**：会话事件流（`tasks/*.jsonl`）与任务 prompt 仍是明文。这是下一步的工作，
+做法与记忆一致——复用 `DataCipher`，只是 JSONL 需要按行加密或整文件加密。账本不加密
+（只有配置快照），但会提示用户。
 
 **这里有个必须你决定的权衡**：如果要求「没有主密码任何文件都读不了」，那应用每次启动都要你输密码。要么接受这个摩擦，要么接受磁盘上的数据可读。
 
@@ -373,16 +395,18 @@ class MasterPasswordStore(SecretStore):      # 主密码 + AES-GCM 文件，最�
 
 ## 六、实现顺序与工作量
 
-| 阶段 | 内容 | 大致工作量 |
+| 阶段 | 内容 | 状态 |
 |---|---|---|
-| ✅ 已完成 | UI 间距修正 | — |
-| 1 | 密钥迁移到凭据管理器 + 加密存储 | 中 |
-| 2 | Persona（复用 prompt segment） | 小 |
-| 3 | Auto-Review（含 fail-closed 与 UI 报错） | 中 |
-| 4 | RAG 存储 + 提取 + 注入 | 大 |
-| 5 | RAG 向量检索（sqlite-vec） | 中 |
+| ✅ | UI 间距修正 | 已完成 |
+| ✅ | 密钥迁移到凭据管理器 + AES-256-GCM 加密 | 已完成 |
+| ✅ | RAG 存储 + 规则提取 + 静默注入 | 已完成 |
+| 1 | Persona（复用 prompt segment + Temperature/Top_P 热切换） | 待做 |
+| 2 | Auto-Review（含 fail-closed 与 UI 报错） | 待做 |
+| 3 | 会话事件流加密（复用 DataCipher） | 待做 |
+| 4 | RAG 向量检索（sqlite-vec） | 待做 |
 
-建议顺序：1 → 2 → 3 → 4 → 5。理由：密钥是最基础的（其他都依赖它），Persona 最小且能立刻见效，Auto-Review 独立于 RAG，RAG 最复杂放最后。
+建议顺序：1 → 2 → 3 → 4。密钥与记忆先于其他所有功能，是因为其他模块都建立在
+「有 key 可调、有上下文可查」之上。
 
 ---
 

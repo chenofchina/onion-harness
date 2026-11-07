@@ -3,12 +3,13 @@
 Two tables carry the data:
 
 * ``memories`` holds the ciphertext plus ranking metadata.
-* ``memories_fts`` is an FTS5 index over the *tokenised* text, which is what
-  makes Chinese substring search work (see :mod:`tokenizer`).
+* ``memories_fts`` is an FTS5 index over *hashed* tokens (a blind index), which
+  is what makes Chinese substring search work without writing the words
+  themselves to disk (see :mod:`tokenizer`).
 
 Encryption is AES-256-GCM. The key lives in the OS credential store; the
-database itself only ever contains ciphertext. A caller without a key can still
-open the file and will get nothing readable out of it.
+database itself only ever contains ciphertext and keyed digests. A caller
+without a key can still open the file and will get nothing readable out of it.
 """
 
 from __future__ import annotations
@@ -60,6 +61,11 @@ class MemoryStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._cipher = cipher
+        # The search index stores token digests rather than tokens, so the file
+        # holds no readable text. A cipher without ``token_hash`` (the test
+        # doubles) yields an unhashed index, which is fine because those stores
+        # are explicitly plaintext.
+        self._hasher = getattr(cipher, "token_hash", None)
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -96,7 +102,7 @@ class MemoryStore:
             )
             self._conn.execute(
                 "INSERT INTO memories_fts (memory_id, body) VALUES (?, ?)",
-                (memory.id, index_text(memory.text)),
+                (memory.id, index_text(memory.text, self._hasher)),
             )
             self._conn.commit()
         memory.stored = True
@@ -138,7 +144,7 @@ class MemoryStore:
         ``bm25 × time-decayed weight`` so a strong lexical match on a stale event
         does not outrank a weak match on something the user still cares about.
         """
-        expression = build_match_expression(query)
+        expression = build_match_expression(query, self._hasher)
         if not expression:
             return []
 
