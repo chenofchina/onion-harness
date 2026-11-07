@@ -31,6 +31,7 @@ RANK: Dict[str, int] = {
     "core": 0,
     "sandbox": 1,
     "ledger": 1,
+    "memory": 1,
     "plugins": 2,
     "harness": 2,
     "api": 3,
@@ -43,10 +44,11 @@ ALLOWED: Dict[str, Set[str]] = {
     "core": set(),
     "sandbox": {"core"},
     "ledger": {"core"},
+    "memory": {"core"},
     "plugins": {"core", "sandbox"},
-    "harness": {"core", "ledger"},
-    "api": {"core", "sandbox", "ledger", "plugins", "harness"},
-    "app": {"core", "sandbox", "ledger", "plugins", "harness", "api"},
+    "harness": {"core", "ledger", "memory"},
+    "api": {"core", "sandbox", "ledger", "memory", "plugins", "harness"},
+    "app": {"core", "sandbox", "ledger", "memory", "plugins", "harness", "api"},
 }
 
 STDLIB_ALLOWED = set(sys.stdlib_module_names) | {"__future__", "typing_extensions"}

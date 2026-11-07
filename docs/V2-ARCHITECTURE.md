@@ -143,30 +143,107 @@ class MemoryStore:
         "id": "default",
         "label": "Default",
         "description": "平衡、谨慎",
-        "segments": ["core"],        # 引用哪些 prompt segment
-        "overlay": "",               # 人格专属的额外指令
+        "overlay": "",              # 人格专属提示词，与核心 prompt 同级
+        "sampling": {               # 人格接管采样参数
+            "temperature": 0.7,
+            "top_p": 1.0,
+        },
+        "builtin": True,
+    },
+    {
+        "id": "procrastinator",
+        "label": "Procrastinator",
+        "description": "反复思考，很少动手",
+        "overlay": "You deliberate heavily. Explore the problem from several angles "
+                   "before acting; when in doubt, ask rather than execute.",
+        "sampling": {"temperature": 0.85, "top_p": 0.95},
         "builtin": True,
     },
     {
         "id": "aggressive",
         "label": "Aggressive",
-        "description": "直接动手，少问",
-        "overlay": "You act decisively. Prefer doing over asking. Use tools freely.",
+        "description": "直接动手，连续验证",
+        "overlay": "You act decisively. After acting, verify with follow-up tool calls "
+                   "before reporting. Prefer doing over asking.",
+        "sampling": {"temperature": 0.35, "top_p": 0.9},
         "builtin": True,
     },
 ],
 "active_persona": "default",
 ```
 
-叠加顺序：`core segment` → `persona.overlay` → 模式契约（Plan/Strict）。
+### 同级 Prompt 叠加规则
 
-这样人格影响语气和激进度，但**不能**绕过 Plan 模式的只读限制或 Strict 的验证要求——安全约束永远在最外层。
+人格提示词与核心 System Prompt **处于同一层级**，并通过同一条系统通道注入（因此同样穿透上下文压缩）。叠加顺序是固定的：
+
+```
+1. core segment        核心行为规则（始终存在）
+2. persona.overlay     人格语气与行为倾向
+3. mode contract       Plan 只读 / Strict 防幻觉（始终在最后）
+```
+
+**顺序不可调换，也不允许人格覆盖前两项。** 实现上，`compose_system_prompt()` 增加一个 `persona` 参数，拼接在 core 之后、模式契约之前：
+
+```python
+def compose_system_prompt(state, persona=None):
+    base = join_enabled_segments(state)          # core
+    if persona and persona.overlay:
+        base += "
+
+## Persona: " + persona.label + "
+" + persona.overlay
+    return compose_mode_prompt(mode, base)       # mode contract 永远最后
+```
+
+`compose_mode_prompt` 已经存在且永远在最后拼接，所以 Plan 的只读限制和 Strict 的验证要求**不可能**被人格绕过——这是结构保证，不是约定。
+
+### 采样参数热切换
+
+人格接管 `temperature` 和 `top_p`。切换人格后，**下一次请求**即使用新参数，无需重启。
+
+参数流向：
+
+```
+persona.sampling
+    ↓  build_model_config() 覆盖
+ModelConfig.temperature / .top_p
+    ↓  SessionFactory.build_options()
+engine options → provider.chat_completion(temperature=…, top_p=…)
+    ↓  OpenAI 兼容层: payload.update(kwargs)
+实际请求体
+```
+
+**需要新增的管道**（当前 `top_p` 完全没有通道）：
+
+| 位置 | 现状 | 需要做 |
+|---|---|---|
+| `ModelConfig` | 有 `temperature`，无 `top_p` | 加 `top_p: Optional[float]` |
+| `build_model_config` | 解析 `temperature` | 解析 `top_p`，clamp 到 0..1 |
+| `SessionFactory.build_options` | 只传 `temperature` | 传 `extra_llm_kwargs={"top_p": …}` |
+| `OnionOpenAIProvider` | 透传 kwargs | 无需改（已有 `payload.update(kwargs)`） |
+| `AnthropicProvider` | 只处理 `temperature` | 加 `top_p` 到 payload |
+
+**冲突规则**：人格采样参数优先级 **低于** 用户在同一会话中手动指定的值。也就是说，用户在模型选择器里显式调过温度，人格切换不覆盖它；只有用户没显式指定时才采用人格值。这避免了「换个人格就把我的设置改了」的意外。
+
+**Anthropic 的特殊情况**：启用 extended thinking 时 API 不接受 `temperature` 和 `top_p`（会报错）。现有代码已经在 thinking 开启时跳过 temperature，`top_p` 需要同样处理。
+
+### 行为倾向如何生效
+
+人格通过提示词影响行为倾向——拖延症人格倾向于多思考少动手，极客人格倾向于连续调用工具验证。这是**软约束**：模型通常遵守，但不保证。
+
+它**永远受限于** Plan 和 Standard 模式：
+
+| 场景 | 结果 |
+|---|---|
+| 极客人格 + Plan 模式 | 依然是只读，写操作被拒绝 |
+| 极客人格 + Standard 模式 | 依然逐条弹出审批卡 |
+| 拖延症人格 + Standard | 少调用工具，但调用了照样审批 |
+
+人格改变的是「想做什么」，模式约束决定「能做什么」。两者不在同一层，前者无法突破后者。
 
 ### 热切换
 
-复用现有的 `update_settings` 通道，加一个 `active_persona` 字段。切换后**下一次请求**即生效，无需重启。
-
-同时加进元工具（AI 可提议切换人格，但同样需要你确认）：
+复用现有的 `update_settings` 通道，加 `active_persona` 字段。同时加进元工具（AI 可提议切换人格，同样需要你确认）：
 
 ```python
 ChangeKind.SELECT_PERSONA = "select_persona"
@@ -174,7 +251,7 @@ ChangeKind.SELECT_PERSONA = "select_persona"
 
 ### UI
 
-侧栏模型选择器旁边加一个下拉，显示当前人格。切换即时生效。
+侧栏模型选择器旁边加一个下拉，显示当前人格及其采样参数（如 `Aggressive · T0.35 / P0.9`）。切换即时生效。
 
 ---
 
@@ -309,25 +386,33 @@ class MasterPasswordStore(SecretStore):      # 主密码 + AES-GCM 文件，最�
 
 ---
 
-## 七、必须先定的四件事
+## 七、已确认的决定
 
-这几个问题会显著改变实现，等你确认后我再动手。
+**1. 主密码：不需要。**
+使用 Windows 凭据管理器（`win32cred`）。`settings.json` 只存引用名，密钥本体在系统凭据库。靠 Windows 账户隔离防止其他用户读取。无凭据管理器时的回退仍需设计（见「未决事项」）。
 
-**1. 主密码要不要？**
-要求「没有主密码读不了任何文件」意味着每次启动输密码。接受这个摩擦，还是接受数据在磁盘上可读（靠 Windows 账户隔离保护）？
+**2. RAG 提取：先规则，后模型。**
+规则版（正则 + 启发式）先落地，零成本、可测。接口预留 `summarizer` 注入点，需要时换走模型的版本。
 
-**2. RAG 提取用规则还是模型？**
-规则版零成本、可测、但粗糙。模型版质量高，但每轮多一次调用。我建议先规则，用一段时间再决定。
+**3. Auto-Review：`deepseek-flash` + 本地启发式预筛。**
+只有疑似写操作才调用审查模型，纯读取直接放行。审查失败按 fail-closed 处理，错误信息明确区分「审查不可用」与「代码危险」。
 
-**3. Auto-Review 用哪个审查模型？**
-你指定了 `deepseek-flash`。但你机器上有 Kaspersky 拦截 HTTPS——虽然已用 `truststore` 解决，审查调用会走同一条链路。如果延迟明显，可能需要本地模型兜底。
-
-**4. 「人格可以影响调用工具的激进程度」怎么实现？**
-人格只能改提示词（软约束），模型可能不遵守。要真正的硬约束（比如激进人格自动跳过审批卡）就是在降低安全性——这个我不建议做。你希望人格只影响语气，还是确实影响行为阈值？
+**4. 人格：同级 Prompt + 接管采样参数 + 软行为倾向。**
+不越过任何安全约束。详见第三节。
 
 ---
 
-## 八、我不会做的事
+## 八、未决事项
+
+**无凭据管理器时的密钥回退。**
+Linux 容器里可能没有 keyring 后端。届时要么要求安装 `keyring` 后端，要么回退到主密码加密文件。这个分支还没定，等真正跨平台时再决定。当前 Windows 目标下不阻塞。
+
+**`sqlite-vec` 安装失败时的召回质量。**
+降级到纯 FTS5 是可用但明显变差。需要在实现时实测降级前后差异，再决定是否值得把向量检索设为必需依赖。
+
+---
+
+## 九、我不会做的事
 
 写在这里，避免以后争执：
 
