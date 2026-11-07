@@ -956,11 +956,28 @@ function Shell() {
                   <div className="onion-stream__inner">
                     {events.map((event) => {
                       const isUserAnchor = event.type === 'user-input'
+                      const editingThis = isUserAnchor && editingTaskId === activeTask?.id
+                      const rendered = editingThis
+                        ? null
+                        : renderEvent(event, resultsByCall, callIds, eventActions)
+
+                      // Folded events (a tool-result merged into its tool-call)
+                      // render nothing. Emitting an empty wrapper still consumed
+                      // a flex gap, which doubled the space between consecutive
+                      // tool cards. Skip the wrapper entirely.
+                      if (!rendered && !editingThis) return null
+
+                      // Tool traffic is denser than prose: mark it so the stream
+                      // can tighten the gap between consecutive tool cards.
+                      const isToolRow =
+                        event.type === 'tool-call' || event.type === 'change-proposal'
+
                       return (
                         <div
                           key={event.id}
                           className="card"
                           data-event-id={event.id}
+                          data-kind={isToolRow ? 'tool' : undefined}
                           data-highlighted={highlightedEventId === event.id ? 'true' : undefined}
                         >
                           {isUserAnchor && activeTask && !event.payload.edited && (
@@ -971,7 +988,7 @@ function Shell() {
                               onArchive={() => archiveTask(activeTask.id)}
                             />
                           )}
-                          {isUserAnchor && editingTaskId === activeTask?.id && !event.payload.edited ? (
+                          {editingThis ? (
                             <TaskEditor
                               initial={activeTask.prompt}
                               busy={editBusy}
@@ -979,7 +996,7 @@ function Shell() {
                               onSubmit={(text) => editTask(activeTask.id, text)}
                             />
                           ) : (
-                            renderEvent(event, resultsByCall, callIds, eventActions)
+                            rendered
                           )}
                         </div>
                       )

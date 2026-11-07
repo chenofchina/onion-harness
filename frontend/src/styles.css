@@ -482,6 +482,18 @@ button {
   gap: 14px;
 }
 
+/* Consecutive tool cards read as one block of activity, so they sit closer
+   together than prose. The first tool card after prose keeps the normal gap. */
+.onion-stream__inner > .card[data-kind='tool'] + .card[data-kind='tool'] {
+  margin-top: -8px;
+}
+
+/* A run of tool cards also pulls slightly toward whatever follows it, so the
+   assistant's summary is not stranded. */
+.onion-stream__inner > .card[data-kind='tool'] + .card:not([data-kind='tool']) {
+  margin-top: -2px;
+}
+
 /* empty state */
 .onion-empty {
   flex: 1 1 auto;
