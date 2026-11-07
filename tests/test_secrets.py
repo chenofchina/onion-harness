@@ -160,6 +160,21 @@ class SettingsStoreTest(unittest.TestCase):
         self.assertNotIn("api_keys", again)
         self.assertEqual(sorted(stored), ["deepseek"])
 
+    def test_tests_never_reach_the_real_credential_store(self):
+        """A test process must get an in-process store, whatever the env says.
+
+        The failure this guards against is silent: a throwaway key like
+        ``sk-test`` written to the real Windows credential manager replaces the
+        developer's actual provider key, and nothing reports it until the next
+        real request fails to authenticate.
+        """
+        from onion_harness.api import store as store_module
+        from onion_harness.api.secrets import MemorySecretStore, WindowsCredentialStore
+
+        self.assertTrue(store_module._looks_like_a_test_run())
+        self.assertIsInstance(store_module._default_store(self.dir), MemorySecretStore)
+        self.assertNotIsInstance(store_module._default_store(self.dir), WindowsCredentialStore)
+
     def test_provider_keys_reads_the_vault(self):
         settings = dict(DEFAULT_SETTINGS)
         settings = self.store.set_provider_key(settings, "deepseek", "sk-1")

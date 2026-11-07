@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -63,16 +64,35 @@ _SECRET_FIELDS = ("api_key", "api_keys")
 _memory_stores: Dict[str, MemorySecretStore] = {}
 
 
+def _looks_like_a_test_run() -> bool:
+    """True when this process is a test runner.
+
+    Two reasons this matters. Tests use throwaway keys like ``"sk-test"``; writing
+    those to the real credential store would overwrite the developer's actual
+    provider keys, and the damage would be invisible until the next real request
+    failed to authenticate. The check is process-wide because the conftest hook
+    that sets ``ONION_SECRET_STORE`` is bypassed by ``python -m unittest``.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    if os.environ.get("ONION_SECRET_STORE", "").strip().lower() == "memory":
+        return True
+    if "pytest" in sys.modules or "unittest" in sys.modules:
+        return True
+    argv0 = Path(sys.argv[0] or "").name.lower()
+    return argv0 in {"pytest", "py.test", "unittest"}
+
+
 def _default_store(root: Path) -> SecretStore:
     """The credential store to use, honouring an explicit override.
 
-    ``ONION_SECRET_STORE=memory`` exists for tests and portable runs: without it
-    every test run would write its fake keys into the developer's real Windows
-    credential manager, clobbering their actual provider keys. In that mode the
-    store is keyed by data directory so two tests never see each other's keys.
+    ``ONION_SECRET_STORE=memory`` exists for tests and portable runs. As a second
+    line of defence the process is inspected for a test runner, so a test module
+    that forgets the environment variable still cannot touch the real store. In
+    that mode the store is keyed by data directory so two tests never see each
+    other's keys.
     """
-    mode = os.environ.get("ONION_SECRET_STORE", "").strip().lower()
-    if mode == "memory":
+    if _looks_like_a_test_run():
         key = str(root)
         if key not in _memory_stores:
             _memory_stores[key] = MemorySecretStore()
