@@ -182,9 +182,12 @@ class MemoryToolsTest(_StoreBase):
         self.assertEqual(result["count"], 1)
         self.assertIn("PowerShell", result["memories"][0]["text"])
 
-    def test_search_requires_a_query(self):
+    def test_search_without_a_query_lists_recent_notes(self):
+        """An empty query is a "what do you have" request, not an error."""
         tools = self._by_name(self._tools().tools())
-        self.assertFalse(tools["memory_search"].handler({"query": "  "})["ok"])
+        result = tools["memory_search"].handler({"query": "  "})
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["matched"])
 
     def test_forget_removes_a_note(self):
         tools = self._by_name(self._tools().tools())
@@ -348,3 +351,108 @@ class RuntimeMemoryToolsTest(_StoreBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class UnreadableRowsTest(unittest.TestCase):
+    """Rows from a different master secret must not break the whole store."""
+
+    def setUp(self):
+        from onion_harness.api.secrets import DataCipher
+
+        self.dir = Path(tempfile.mkdtemp(prefix="onion-badkey-"))
+        self.path = self.dir / "m.db"
+        self.key = b"a" * 32
+        writer = MemoryStore(self.path, cipher=DataCipher(self.key))
+        writer.remember(new_memory("older note", MemoryKind.FACT))
+        writer.close()
+
+    def test_remember_works_despite_an_unreadable_row(self):
+        """The reported symptom: adding appeared to work while reads did not.
+
+        The real failure was in the write path - _find_duplicate decrypted every
+        row and raised, so nothing could be added to a database that merely
+        contained older notes from a different key.
+        """
+        from onion_harness.api.secrets import DataCipher
+
+        store = MemoryStore(self.path, cipher=DataCipher(b"b" * 32))
+        try:
+            store.remember(new_memory("a new note", MemoryKind.PREFERENCE))
+            self.assertEqual(store.count(), 2)
+        finally:
+            store.close()
+
+    def test_recall_skips_unreadable_rows(self):
+        from onion_harness.api.secrets import DataCipher
+
+        store = MemoryStore(self.path, cipher=DataCipher(b"b" * 32))
+        try:
+            store.remember(new_memory("findable new note about PowerShell", MemoryKind.FACT))
+            hits = store.recall("PowerShell")
+            self.assertEqual(len(hits), 1)
+            self.assertIn("findable", hits[0].text)
+        finally:
+            store.close()
+
+    def test_recent_and_unreadable_count_agree(self):
+        from onion_harness.api.secrets import DataCipher
+
+        store = MemoryStore(self.path, cipher=DataCipher(b"b" * 32))
+        try:
+            self.assertEqual(store.recent(10), [])
+            self.assertEqual(store.unreadable_count(), 1)
+        finally:
+            store.close()
+
+
+class SearchListingFallbackTest(unittest.TestCase):
+    """A question phrased without the note's words must still find it."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="onion-searchfb-"))
+        from onion_harness.api.secrets import DataCipher
+
+        self.store = MemoryStore(self.dir / "m.db", cipher=DataCipher(b"k" * 32))
+        self.bridge = MemoryBridge(self.store)
+        self.bridge.add("用户偏好：脚本统一用 PowerShell 7", kind="preference")
+
+    def tearDown(self):
+        self.store.close()
+
+    def _search(self, query):
+        return self.tools["memory_search"].handler({"query": query})
+
+    @property
+    def tools(self):
+        return {tool.name: tool for tool in MemoryTools(self.bridge, "t1").tools()}
+
+    def test_a_matching_query_reports_a_match(self):
+        result = self._search("PowerShell")
+        self.assertTrue(result["matched"])
+        self.assertGreaterEqual(result["count"], 1)
+
+    def test_a_non_matching_query_lists_recent_notes(self):
+        result = self._search("你还记得什么")
+        self.assertFalse(result["matched"])
+        self.assertGreaterEqual(result["count"], 1, "the agent must still see its notes")
+        self.assertIn("most recent", result["note"])
+
+    def test_no_query_lists_notes(self):
+        result = self._search("")
+        self.assertFalse(result["matched"])
+        self.assertGreaterEqual(result["count"], 1)
+
+    def test_disabled_memory_refuses_every_call(self):
+        """The tools exist but fail loudly; the runtime decides whether to register
+        them at all (see build_memory_tools)."""
+        tools = {tool.name: tool for tool in MemoryTools(None, "t1").tools()}
+        self.assertTrue(tools, "handlers must still be constructible")
+        for name, tool in tools.items():
+            result = tool.handler({"text": "x", "query": "x", "id": "x"})
+            self.assertFalse(result["ok"], name)
+            self.assertIn("disabled", result["error"], name)
+
+    def test_the_prompt_explains_recall_is_keyword_based(self):
+        from onion_harness.harness.runtime import MEMORY_PROMPT_HINT
+
+        self.assertIn("keyword", MEMORY_PROMPT_HINT)
+        self.assertIn("memory_search", MEMORY_PROMPT_HINT)

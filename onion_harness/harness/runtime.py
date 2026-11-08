@@ -70,11 +70,18 @@ MEMORY_PROMPT_HINT = (
     "yourself:\n"
     "- memory_remember: save a note. Use it when the user states a preference, "
     "corrects you, or tells you a lasting fact about their setup.\n"
-    "- memory_search: look something up when automatic recall did not surface it.\n"
+    "- memory_search: search the notes, or list them. Call this before telling the "
+    "user you do not remember something.\n"
     "- memory_forget: delete a note the user says is wrong.\n"
     "Notes are stored encrypted on this machine and are visible to the user, who can "
     "edit or delete them. Write them as plain sentences. Do not save task-local "
     "details, and never claim to have remembered something you did not actually save.\n"
+    "\n"
+    "Recall is keyword based: notes are attached automatically when the request shares "
+    "words with them. A differently phrased question surfaces nothing even when notes "
+    "exist, so the absence of recalled notes does not mean memory is empty. When the "
+    "user asks what you remember, call memory_search (with no query it lists the most "
+    "recent notes) instead of answering that you remember nothing.\n"
 )
 
 # Appended only when the web search tool is actually present. The last sentence is

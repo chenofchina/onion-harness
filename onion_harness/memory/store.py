@@ -234,7 +234,14 @@ class MemoryStore:
         scored: List[tuple[float, Memory]] = []
         now = time.time()
         for row in rows:
-            memory = self._from_row(row)
+            try:
+                memory = self._from_row(row)
+            except Exception:  # noqa: BLE001 - a wrong key, not a reason to fail
+                # A row written under a different master secret cannot be shown, but
+                # it must not take the whole result with it: that turns "two old
+                # notes are unreadable" into "recall returns nothing at all", which
+                # is indistinguishable from "the agent has no memory".
+                continue
             if kinds and memory.kind.value not in kinds:
                 continue
             # bm25 returns a negative score where more negative is better; map it
@@ -312,7 +319,15 @@ class MemoryStore:
         return memory
 
     def _find_duplicate(self, memory: Memory) -> Optional[Memory]:
-        """Same kind and same text means the same memory; merge instead of adding."""
+        """Same kind and same text means the same memory; merge instead of adding.
+
+        Rows that cannot be decrypted are skipped rather than raised. They belong to
+        a different master secret, so they cannot possibly be a duplicate of a note
+        being written now - and letting one abort the scan made every write fail on
+        a database that merely had older, unreadable rows in it. That presented as
+        "adding works but reading does not", with the failure actually in the write
+        path.
+        """
         needle = memory.text.strip()
         if not needle:
             return None
@@ -321,7 +336,10 @@ class MemoryStore:
                 "SELECT * FROM memories WHERE kind = ?", (memory.kind.value,)
             ).fetchall()
         for row in rows:
-            existing = self._from_row(row)
+            try:
+                existing = self._from_row(row)
+            except Exception:  # noqa: BLE001 - different key, cannot be a duplicate
+                continue
             if existing.text.strip() == needle:
                 return existing
         return None

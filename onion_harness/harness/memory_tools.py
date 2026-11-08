@@ -160,26 +160,63 @@ class MemoryTools:
         return {"ok": True, "id": record["id"], "kind": record["kind"]}
 
     def _search(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Search memory, falling back to a recent listing.
+
+        Recall is lexical: it ranks notes by shared words. A question phrased in
+        different vocabulary - "what do you remember" against a note about
+        PowerShell - matches nothing, and the agent then truthfully reports it
+        remembers nothing. That reads as a broken feature.
+
+        So when the query matches nothing, the most recent notes are returned
+        instead, with a note saying why. Listing everything is the right fallback
+        here: the store is small by design, and "here is what I have" is a far more
+        useful answer than "no results".
+        """
         if self._bridge is None:
             return {"ok": False, "error": "Long-term memory is disabled on this install."}
         query = str(args.get("query") or "").strip()
-        if not query:
-            return {"ok": False, "error": "query is required"}
         try:
             limit = int(args.get("limit") or 8)
         except (TypeError, ValueError):
             limit = 8
         limit = max(1, min(limit, 20))
+
+        memories: List[Any] = []
+        if query:
+            try:
+                memories = self._bridge.recall(query)[:limit]
+            except Exception:  # noqa: BLE001
+                memories = []
+
+        if memories:
+            return {
+                "ok": True,
+                "count": len(memories),
+                "matched": True,
+                "memories": [
+                    {"id": m.id, "kind": m.kind.value, "text": m.text} for m in memories
+                ],
+            }
+
+        # Nothing matched (or no query at all): show what is stored.
         try:
-            memories = self._bridge.recall(query)[:limit]
+            recent = self._bridge.recent(limit)
         except Exception:  # noqa: BLE001
             return {"ok": False, "error": "Memory search failed."}
+
         return {
             "ok": True,
-            "count": len(memories),
+            "count": len(recent),
+            "matched": False,
+            "note": (
+                f"No note matched {query!r}; these are the {len(recent)} most recent "
+                "notes instead. Retrieval is keyword based, so try a term that would "
+                "appear in the note itself."
+                if query
+                else f"The {len(recent)} most recent notes."
+            ),
             "memories": [
-                {"id": memory.id, "kind": memory.kind.value, "text": memory.text}
-                for memory in memories
+                {"id": m["id"], "kind": m["kind"], "text": m["text"]} for m in recent
             ],
         }
 

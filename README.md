@@ -580,6 +580,12 @@ makes the second conversation easier than the first.
   model simply already knows. The monitor shows what was recalled for the current
   run; the **Memory** entry in the sidebar lists every stored note.
 
+**Recall is keyword based**, so a note surfaces when the request shares words with
+it. A differently phrased question — "what do you remember" against a note about
+PowerShell — matches nothing, which is not the same as having no memory. The agent
+is told this, and `memory_search` falls back to listing the most recent notes when a
+query matches nothing, so it reports what it has instead of claiming ignorance.
+
 **The agent can write memory too.** It has `memory_remember`, `memory_search` and
 `memory_forget`, and the system prompt tells it so — without that text a model
 correctly answers "I cannot write memory", because before these tools existed it
