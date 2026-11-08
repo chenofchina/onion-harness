@@ -333,7 +333,18 @@ aggregates Baidu and Bing and returns one compact JSON document. Running it loca
 is the point: no cloud API key ships inside the binary, and it works on networks
 where cloud search APIs are unreachable.
 
-Start the service, then the tool is available as `web_search`:
+**Onion starts it for you.** On launch the app looks for the service and, if it is
+not already running, starts it — silently, and tied to Onion's own lifetime so it
+cannot outlive the app. If the service is not installed, the app still starts
+normally and the agent reports search as unavailable; a missing optional service is
+a degraded feature, not a reason to refuse to launch. Settings shows which of these
+happened.
+
+An instance that is already running is **reused, not duplicated** — starting a
+second copy would either fight for the port or shadow the one you configured
+yourself. Onion only stops what it started.
+
+To run it by hand instead:
 
 ```
 search-neo            # serves http://localhost:8080
@@ -359,6 +370,10 @@ Configure the endpoint in Settings (enabled, base URL, timeout), or by patching
 `web_search` in the settings payload. Changing it takes effect on the next task.
 Switching search off removes the tool *and* its prompt hint, so the model is never
 told it can search when it cannot.
+
+If the service lives somewhere unusual, set `web_search_command` to an argv list,
+for example `["python", "-m", "search_neo"]`; otherwise Onion looks for
+`search-neo` on `PATH` and then for a `search_neo` Python module.
 
 ### Personas
 

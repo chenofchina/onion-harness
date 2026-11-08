@@ -1267,6 +1267,7 @@ function Shell() {
             refreshBoot()
           }}
           webSearch={boot.web_search}
+          webSearchStatus={boot.web_search_status}
           onSaveWebSearch={async (patch) => {
             const next = await api.updateSettings({ web_search: patch })
             setSettings(next)

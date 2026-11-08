@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+from typing import Optional
 from pathlib import Path
 
 from onion_harness.api.server import OnionHTTPServer
@@ -83,10 +84,41 @@ def find_static_dir() -> Path:
     return STATIC_DIR
 
 
+def _start_search_service(service) -> Optional["SearchService"]:
+    """Bring up the local search service alongside the app.
+
+    Returns the supervisor (or None when web search is off). Never raises: a missing
+    search service is a degraded feature, not a reason to refuse to launch. The tool
+    already reports "unavailable" honestly, so the app is fully usable without it.
+    """
+    from onion_harness.app.search_service import SearchService
+
+    try:
+        config = service.web_search_config
+        if not config.enabled:
+            print("[onion] web search disabled")
+            return None
+        supervisor = SearchService(
+            config.endpoint(),
+            enabled=True,
+            # An explicit command in settings wins; otherwise PATH and the running
+            # interpreter are probed.
+            command=list(service.settings.get("web_search_command") or []),
+        )
+        status = supervisor.start()
+        print(f"[onion] web search: {status.state}" + (f" ({status.detail})" if status.detail else ""))
+        service.search_service = supervisor
+        return supervisor
+    except Exception:  # noqa: BLE001 - startup must not depend on this
+        print("[onion] web search supervisor failed to start (search will report unavailable)")
+        return None
+
+
 def run(host: str = "127.0.0.1", port: int = 0, data_dir: str | None = None, no_window: bool = False) -> None:
     dpi_mode = _DPI_MODE
     service = OnionService(data_dir=data_dir)
     service.start()
+    search_service = _start_search_service(service)
 
     static_dir = find_static_dir()
     server = OnionHTTPServer(service, static_dir=static_dir)
@@ -111,6 +143,8 @@ def run(host: str = "127.0.0.1", port: int = 0, data_dir: str | None = None, no_
             pass
         finally:
             server.stop()
+            if search_service is not None:
+                search_service.stop()
             service.stop()
         return
 
@@ -334,6 +368,8 @@ def run(host: str = "127.0.0.1", port: int = 0, data_dir: str | None = None, no_
         del window
     finally:
         server.stop()
+        if search_service is not None:
+            search_service.stop()
         service.stop()
 
 

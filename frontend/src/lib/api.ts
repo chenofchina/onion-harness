@@ -312,6 +312,15 @@ export type WebSearchConfig = {
   max_results: number
 }
 
+export type WebSearchStatus = {
+  state: 'stopped' | 'starting' | 'running' | 'external' | 'unavailable' | 'failed' | 'unmanaged' | 'unknown'
+  pid?: number | null
+  managed?: boolean
+  available?: boolean
+  detail?: string
+  restarts?: number
+}
+
 export type AutoReviewConfig = {
   enabled: boolean
   provider_id: string
@@ -355,6 +364,8 @@ export type Bootstrap = {
   active_persona?: PersonaOption
   auto_review?: AutoReviewConfig
   web_search?: WebSearchConfig
+  web_search_status?: WebSearchStatus
+  web_search_command?: string[]
   tasks: TaskRecord[]
   archived: TaskRecord[]
   history: Revision[]

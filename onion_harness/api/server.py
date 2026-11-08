@@ -150,6 +150,8 @@ def _make_handler(service: OnionService, static_dir: Optional[Path]):
                 return self._json(service.roundtable_seat_thoughts(match.group(1)))
             if method == "GET" and path == "/api/mcp":
                 return self._json({"tools": service.mcp_tools()})
+            if method == "GET" and path == "/api/web-search/status":
+                return self._json(service.web_search_status())
             if method == "GET" and path == "/api/personas":
                 return self._json({"personas": service.persona_list()})
             if method == "POST" and path == "/api/personas":

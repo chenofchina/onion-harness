@@ -76,6 +76,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "auto_review": {},
     # Local search-neo endpoint. Empty means the built-in localhost:8080 default.
     "web_search": {},
+    # Optional explicit launch command for the search service, as a list of argv
+    # parts. Empty means "find it on PATH, or via python -m".
+    "web_search_command": [],
     # Provider ids that hold a key in the credential store. Values live there.
     "key_providers": [],
 }

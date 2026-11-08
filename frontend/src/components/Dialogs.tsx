@@ -19,6 +19,7 @@ import {
   type Settings,
   type ThinkingLevel,
   type WebSearchConfig,
+  type WebSearchStatus,
 } from '../lib/api'
 import { LobeIcon } from './LobeIcon'
 import { useTheme, type ThemeMode } from '../lib/theme'
@@ -386,6 +387,7 @@ export function SettingsDialog({
   onSaveAutoReview,
   webSearch,
   onSaveWebSearch,
+  webSearchStatus,
 }: {
   settings: Settings
   onClose: () => void
@@ -399,6 +401,7 @@ export function SettingsDialog({
   onSaveAutoReview?: (patch: Partial<AutoReviewConfig>) => Promise<void>
   webSearch?: WebSearchConfig
   onSaveWebSearch?: (patch: Partial<WebSearchConfig>) => Promise<void>
+  webSearchStatus?: WebSearchStatus
 }) {
   const { mode, setMode } = useTheme()
   const [workspace, setWorkspace] = useState(settings.workspace)
@@ -571,6 +574,25 @@ export function SettingsDialog({
               unreachable the agent is told the search failed rather than allowed to
               answer from memory.
             </span>
+            {webSearchStatus && (
+              <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 6 }}>
+                <span
+                  className="badge"
+                  data-status={
+                    webSearchStatus.available
+                      ? 'success'
+                      : webSearchStatus.state === 'starting'
+                        ? 'running'
+                        : 'failed'
+                  }
+                >
+                  {statusLabel(webSearchStatus.state)}
+                </span>
+                <span className="text-muted" style={{ fontSize: '0.74rem' }}>
+                  {statusDetail(webSearchStatus)}
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -596,6 +618,37 @@ export function SettingsDialog({
       </div>
     </Modal>
   )
+}
+
+/* ----------------------------------------------------------- search status */
+
+function statusLabel(state: string) {
+  switch (state) {
+    case 'running':
+      return 'running'
+    case 'external':
+      return 'running'
+    case 'starting':
+      return 'starting'
+    case 'unavailable':
+      return 'not installed'
+    case 'failed':
+      return 'failed'
+    case 'unmanaged':
+      return 'not supervised'
+    default:
+      return state
+  }
+}
+
+function statusDetail(status: WebSearchStatus) {
+  if (status.state === 'running' && status.pid) {
+    return `started by Onion · pid ${status.pid}`
+  }
+  if (status.restarts) {
+    return `${status.detail || ''} · ${status.restarts} restart(s)`.trim()
+  }
+  return status.detail || ''
 }
 
 /* --------------------------------------------------------- change history */

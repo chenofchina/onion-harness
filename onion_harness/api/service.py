@@ -101,6 +101,9 @@ class OnionService:
         # cannot is how you get invented citations.
         self.web_search_config = WebSearchConfig.from_public(self.settings.get("web_search"))
         self._web_search_tool = build_web_search_tool(self.web_search_config)
+        # Set by the app shell once the supervisor exists; stays None when the app
+        # is used as a library (tests, headless runs).
+        self.search_service = None
 
         # Long-term memory. The key is derived from a random master secret kept
         # in the OS credential store, so the database on disk is ciphertext even
@@ -194,6 +197,21 @@ class OnionService:
 
     def web_search_config_public(self) -> Dict[str, Any]:
         return self.web_search_config.to_public()
+
+    def web_search_status(self) -> Dict[str, Any]:
+        """Health of the local search service, for the settings panel."""
+        supervisor = self.search_service
+        if supervisor is None:
+            return {
+                "state": "unmanaged",
+                "available": False,
+                "managed": False,
+                "detail": "no supervisor in this process",
+            }
+        try:
+            return supervisor.refresh().to_dict()
+        except Exception as exc:  # noqa: BLE001
+            return {"state": "unknown", "available": False, "detail": str(exc)}
 
     # -- lifecycle ----------------------------------------------------------
     def _open_memory(self):
@@ -484,6 +502,7 @@ class OnionService:
             ).to_dict(),
             "auto_review": self._review_config().to_public(),
             "web_search": self.web_search_config.to_public(),
+            "web_search_status": self.web_search_status(),
             "tasks": self.store.load_tasks(),
             "archived": self.archived_tasks(),
             "history": [r.to_dict() for r in self.ledger.list_history()],
