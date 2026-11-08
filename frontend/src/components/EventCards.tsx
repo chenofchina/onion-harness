@@ -21,13 +21,24 @@ import { ApprovalCard } from './TaskActions'
 /* ---------------------------------------------------------------- helpers */
 
 export function executorMeta(name?: string) {
-  switch ((name || '').toLowerCase()) {
+  const key = (name || '').toLowerCase()
+  switch (key) {
     case 'python':
       return { label: 'Python', glyph: 'py' }
     case 'powershell':
       return { label: 'PowerShell', glyph: 'ps' }
     case 'cmd':
       return { label: 'Command Prompt', glyph: 'cmd' }
+    // Non-executor tools have no `executor`, so the badge is driven by the tool
+    // name instead. Without this a web search renders as an anonymous "Tool".
+    case 'web_search':
+      return { label: 'Web search', glyph: 'web' }
+    case 'memory_remember':
+      return { label: 'Remember', glyph: 'memory' }
+    case 'memory_search':
+      return { label: 'Memory search', glyph: 'memory' }
+    case 'memory_forget':
+      return { label: 'Forget', glyph: 'memory' }
     default:
       return { label: name || 'Tool', glyph: 'tl' }
   }
@@ -70,6 +81,24 @@ export function ExecutorGlyph({ glyph }: { glyph: string }) {
         <rect x="2.6" y="4.6" width="18.8" height="14.8" rx="2.6" />
         <path d="M6.2 8.6h4.2M6.2 12h6.4M6.2 15.4h3" strokeLinecap="round" opacity="0.75" />
         <rect x="14.2" y="13.6" width="3.6" height="4" rx="0.7" fill="currentColor" stroke="none" />
+      </svg>
+    )
+  }
+  if (glyph === 'web') {
+    return (
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <circle cx="12" cy="12" r="8.4" />
+        <path d="M3.6 12h16.8" strokeLinecap="round" opacity="0.7" />
+        <path d="M12 3.6c2.4 2.3 3.7 5.3 3.7 8.4s-1.3 6.1-3.7 8.4c-2.4-2.3-3.7-5.3-3.7-8.4S9.6 5.9 12 3.6z" strokeLinejoin="round" opacity="0.85" />
+      </svg>
+    )
+  }
+  if (glyph === 'memory') {
+    return (
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M9 4.6c-2.2 0-3.6 1.3-3.6 3.1 0 .6.1 1.1.4 1.6-1.1.6-1.8 1.7-1.8 3.1 0 1.3.6 2.4 1.6 3-.2.5-.3.9-.3 1.4 0 1.9 1.5 3.2 3.7 3.2" strokeLinecap="round" />
+        <path d="M15 4.6c2.2 0 3.6 1.3 3.6 3.1 0 .6-.1 1.1-.4 1.6 1.1.6 1.8 1.7 1.8 3.1 0 1.3-.6 2.4-1.6 3 .2.5.3.9.3 1.4 0 1.9-1.5 3.2-3.7 3.2" strokeLinecap="round" />
+        <path d="M12 5.2v13.6" strokeLinecap="round" opacity="0.6" />
       </svg>
     )
   }
@@ -164,7 +193,7 @@ export function ToolCallCard({
   return (
     <div className="card card-tool">
       <button className="card-tool__head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <ExecutorBadge executor={executor} />
+        <ExecutorBadge executor={executor || name} />
         <span className="card-tool__main">
           <span className="card-tool__title">
             {meta.label}
@@ -275,7 +304,7 @@ export function ToolResultCard({
   return (
     <div className="card card-tool">
       <button className="card-tool__head" onClick={() => setOpen((v) => !v)}>
-        <ExecutorBadge executor={executor} />
+        <ExecutorBadge executor={executor || name} />
         <span className="card-tool__main">
           <span className="card-tool__title">
             Result · {name}

@@ -310,6 +310,14 @@ class ServiceFeatureTest(unittest.TestCase):
         self.service.stop()
         runtime_module.build_provider = self.original
 
+    def _mcp_tool_names(self):
+        """Only the MCP-managed tools; web search shares the same list."""
+        return [
+            tool.name
+            for tool in self.service.runtime._extra_tools
+            if (tool.metadata or {}).get("kind") != "web-search"
+        ]
+
     def test_modes_payload(self):
         payload = self.service.modes()
         self.assertEqual(len(payload["modes"]), 3)
@@ -343,11 +351,13 @@ class ServiceFeatureTest(unittest.TestCase):
         self.assertEqual([t["name"] for t in tools], ["word_stats"])
         self.assertTrue((self.dir / "mcp" / "word_stats" / "tool.py").is_file())
 
-        # Hot reload: disabling drops it from the live tool set.
+        # Hot reload: disabling drops it from the live tool set. Only the MCP
+        # tools are counted here - web search is injected into the same list but
+        # is not managed by the MCP store.
         self.service.set_mcp_enabled("word_stats", False)
-        self.assertEqual(self.service.runtime._extra_tools, [])
+        self.assertEqual(self._mcp_tool_names(), [])
         self.service.set_mcp_enabled("word_stats", True)
-        self.assertEqual(len(self.service.runtime._extra_tools), 1)
+        self.assertEqual(self._mcp_tool_names(), ["word_stats"])
 
         # Deletion removes files and state.
         self.service.delete_mcp_tool("word_stats")
@@ -372,7 +382,7 @@ class ServiceFeatureTest(unittest.TestCase):
 
         self.service.revert_version(revision["version"])
         self.assertEqual(self.service.ledger.state.get("mcp_tools"), [])
-        self.assertEqual(self.service.runtime._extra_tools, [])
+        self.assertEqual(self._mcp_tool_names(), [])
 
     def test_archive_and_restore(self):
         runtime_module.build_provider = lambda *a, **k: _ScriptedProvider([{"text": "hi"}])

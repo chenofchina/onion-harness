@@ -38,6 +38,11 @@ from onion_harness.plugins.base import BaseExecutor
 from onion_harness.plugins.cmd_executor import CmdExecutor
 from onion_harness.plugins.powershell_executor import PowerShellExecutor
 from onion_harness.plugins.python_executor import PythonExecutor
+from onion_harness.plugins.web_search import (
+    WebSearchConfig,
+    WebSearchTool,
+    build_web_search_tool,
+)
 from onion_harness.sandbox import Sandbox
 
 logger = logging.getLogger("onion.api")
@@ -91,6 +96,12 @@ class OnionService:
         self.mcp = McpRuntime(self.mcp_store)
         self._mcp_tools = self.mcp.load()
 
+        # Web search through the local search-neo service. The tool is absent when
+        # search is switched off, because telling the model it can search when it
+        # cannot is how you get invented citations.
+        self.web_search_config = WebSearchConfig.from_public(self.settings.get("web_search"))
+        self._web_search_tool = build_web_search_tool(self.web_search_config)
+
         # Long-term memory. The key is derived from a random master secret kept
         # in the OS credential store, so the database on disk is ciphertext even
         # if the file is copied off this machine.
@@ -108,7 +119,7 @@ class OnionService:
             ledger=self.ledger,
             executors=self.executors,
             sandbox=self.sandbox,
-            tool_adapters=self._mcp_tools,
+            tool_adapters=self._extra_tools(),
             # The generator is the single publisher: consuming the run is what
             # fans events out. Emitting from both paths would duplicate them.
             emit=None,
@@ -162,6 +173,24 @@ class OnionService:
             wire_format=wire_format,
             temperature=0.0,
         )
+
+    # -- tool set -----------------------------------------------------------
+    def _extra_tools(self) -> List[Any]:
+        """Everything beyond the executors: generated MCP tools plus web search.
+
+        One place decides what the model is offered, so a hot reload and the
+        initial construction cannot drift apart.
+        """
+        tools: List[Any] = list(self._mcp_tools or [])
+        if self._web_search_tool is not None:
+            tools.append(self._web_search_tool)
+        return tools
+
+    def _refresh_tools(self) -> None:
+        self.runtime.set_extra_tools(self._extra_tools())
+
+    def web_search_config_public(self) -> Dict[str, Any]:
+        return self.web_search_config.to_public()
 
     # -- lifecycle ----------------------------------------------------------
     def _open_memory(self):
@@ -342,6 +371,7 @@ class OnionService:
                 self.settings.get("active_persona")
             ).to_dict(),
             "auto_review": self._review_config().to_public(),
+            "web_search": self.web_search_config.to_public(),
             "tasks": self.store.load_tasks(),
             "archived": self.archived_tasks(),
             "history": [r.to_dict() for r in self.ledger.list_history()],
@@ -461,6 +491,15 @@ class OnionService:
                 merged = {**self._review_config().to_public(), **value}
                 self.settings["auto_review"] = ReviewConfig.from_public(merged).to_public()
                 review_changed = True
+            elif key == "web_search" and isinstance(value, dict):
+                merged = {**self.web_search_config.to_public(), **value}
+                self.web_search_config = WebSearchConfig.from_public(merged)
+                self.settings["web_search"] = self.web_search_config.to_public()
+                # Hot-apply: rebuild the tool so enabling search or moving the
+                # endpoint takes effect without a restart. Disabling it removes the
+                # tool entirely, and the prompt hint goes with it.
+                self._web_search_tool = build_web_search_tool(self.web_search_config)
+                self._refresh_tools()
             elif key == "active_persona":
                 persona = self.personas.get(str(value))
                 if persona.id != str(value or "").strip().lower():
@@ -1327,7 +1366,7 @@ class OnionService:
                     self.mcp_store.remove(entry.get("name"))
 
             self._mcp_tools = self.mcp.load()
-            self.runtime.set_extra_tools(self._mcp_tools)
+            self._refresh_tools()
         except Exception:  # noqa: BLE001 - a broken tool must not kill the app
             logger.exception("mcp refresh failed")
 
@@ -1433,7 +1472,7 @@ class OnionService:
                 record["enabled"] = enabled
         self._save_ledger_state()
         self._mcp_tools = self.mcp.load()
-        self.runtime.set_extra_tools(self._mcp_tools)
+        self._refresh_tools()
         return {"name": name, "enabled": enabled}
 
     def delete_mcp_tool(self, name: str) -> Dict[str, Any]:
@@ -1444,7 +1483,7 @@ class OnionService:
         ]
         self._save_ledger_state()
         self._mcp_tools = self.mcp.load()
-        self.runtime.set_extra_tools(self._mcp_tools)
+        self._refresh_tools()
         return {"name": name, "deleted": True}
 
     def _save_ledger_state(self) -> None:

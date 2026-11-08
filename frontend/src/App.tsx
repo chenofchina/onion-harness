@@ -1228,6 +1228,12 @@ function Shell() {
             setSettings(next)
             refreshBoot()
           }}
+          webSearch={boot.web_search}
+          onSaveWebSearch={async (patch) => {
+            const next = await api.updateSettings({ web_search: patch })
+            setSettings(next)
+            refreshBoot()
+          }}
           onClose={() => setDialog(null)}
           onSaved={saveSettings}
         />

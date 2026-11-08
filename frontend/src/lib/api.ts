@@ -256,6 +256,7 @@ export type Settings = {
   temperature?: number | null
   top_p?: number | null
   auto_review?: Partial<AutoReviewConfig>
+  web_search?: Partial<WebSearchConfig>
 }
 
 export type PersonaOption = {
@@ -265,6 +266,13 @@ export type PersonaOption = {
   overlay: string
   sampling: { temperature: number; top_p: number }
   builtin: boolean
+}
+
+export type WebSearchConfig = {
+  enabled: boolean
+  base_url: string
+  timeout: number
+  max_results: number
 }
 
 export type AutoReviewConfig = {
@@ -309,6 +317,7 @@ export type Bootstrap = {
   persona_errors?: string[]
   active_persona?: PersonaOption
   auto_review?: AutoReviewConfig
+  web_search?: WebSearchConfig
   tasks: TaskRecord[]
   archived: TaskRecord[]
   history: Revision[]

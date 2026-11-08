@@ -62,6 +62,11 @@ hiddenimports += [
     "cryptography",
     "cryptography.hazmat.primitives.ciphers.aead",
     "cryptography.hazmat.primitives.kdf.pbkdf2",
+    # HTTP client for the local web-search service. ``idna`` is already listed
+    # above; naming it twice makes PyInstaller warn.
+    "requests",
+    "urllib3",
+    "charset_normalizer",
 ]
 
 # Modules that must NOT be pulled in: the React tree and test-only packages.

@@ -326,7 +326,42 @@ written to `~/.onionharness/mcp/<name>/tool.py`, hot-loaded into the tool
 registry, and recorded in the change ledger, so it can be disabled, deleted or
 rolled back.
 
+### Web search
+
+The agent can search the live web through a **local** search-neo service, which
+aggregates Baidu and Bing and returns one compact JSON document. Running it locally
+is the point: no cloud API key ships inside the binary, and it works on networks
+where cloud search APIs are unreachable.
+
+Start the service, then the tool is available as `web_search`:
+
+```
+search-neo            # serves http://localhost:8080
+```
+
+It sends `GET /search?q=<query>&compact=1` and reads two fields: `answer` (the
+cross-validated summary) and `top` (ranked hits with `title`, `url`, `snippet`).
+
+**Fail closed.** Every failure — the service not running, a timeout, a 5xx, a body
+that is not JSON — raises, which marks the tool result as an *error*. The model is
+told the search failed and instructed not to answer from memory. Returning an empty
+result instead would be the single most reliable way to produce a hallucination:
+the model fills the gap from memory and presents it as researched.
+
+An empty *successful* result is different and is labelled as such: it says nothing
+was found, and explicitly that this does not prove the information does not exist.
+
+Localhost traffic bypasses any configured system proxy. A dead proxy is common on
+this setup, and routing a healthy local service through it makes the tool report
+"unavailable" for a service that is running fine.
+
+Configure the endpoint in Settings (enabled, base URL, timeout), or by patching
+`web_search` in the settings payload. Changing it takes effect on the next task.
+Switching search off removes the tool *and* its prompt hint, so the model is never
+told it can search when it cannot.
+
 ### Personas
+
 
 A persona changes **tone and sampling only**. It has no field that could relax a
 safety rule — no mode, no elevation, no tool permission — so Plan still refuses

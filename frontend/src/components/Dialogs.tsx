@@ -3,6 +3,7 @@ import {
   Archive,
   Check,
   Cloud,
+  Globe,
   KeyRound,
   Puzzle,
   RotateCcw,
@@ -17,6 +18,7 @@ import {
   type Revision,
   type Settings,
   type ThinkingLevel,
+  type WebSearchConfig,
 } from '../lib/api'
 import { LobeIcon } from './LobeIcon'
 import { useTheme, type ThemeMode } from '../lib/theme'
@@ -382,6 +384,8 @@ export function SettingsDialog({
   onOpenMcp,
   autoReview,
   onSaveAutoReview,
+  webSearch,
+  onSaveWebSearch,
 }: {
   settings: Settings
   onClose: () => void
@@ -393,6 +397,8 @@ export function SettingsDialog({
   onOpenMcp?: () => void
   autoReview?: AutoReviewConfig
   onSaveAutoReview?: (patch: Partial<AutoReviewConfig>) => Promise<void>
+  webSearch?: WebSearchConfig
+  onSaveWebSearch?: (patch: Partial<WebSearchConfig>) => Promise<void>
 }) {
   const { mode, setMode } = useTheme()
   const [workspace, setWorkspace] = useState(settings.workspace)
@@ -401,6 +407,7 @@ export function SettingsDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [review, setReview] = useState<AutoReviewConfig | undefined>(autoReview)
+  const [search, setSearch] = useState<WebSearchConfig | undefined>(webSearch)
 
   const save = async () => {
     setBusy(true)
@@ -413,6 +420,7 @@ export function SettingsDialog({
         theme_mode: mode,
       })
       if (review && onSaveAutoReview) await onSaveAutoReview(review)
+      if (search && onSaveWebSearch) await onSaveWebSearch(search)
       onSaved(next)
       onClose()
     } catch (exc) {
@@ -522,6 +530,46 @@ export function SettingsDialog({
               PASS or REJECT. Only destructive snippets are checked, so reads cost
               nothing extra. If the reviewer cannot be reached the call is refused
               rather than run unchecked.
+            </span>
+          </div>
+        )}
+
+        {search && (
+          <div className="field">
+            <label>Web search</label>
+            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+              <button
+                className="btn"
+                data-variant={search.enabled ? 'filled' : 'outlined'}
+                onClick={() => setSearch({ ...search, enabled: !search.enabled })}
+                type="button"
+              >
+                <Globe size={14} /> {search.enabled ? 'On' : 'Off'}
+              </button>
+              <input
+                type="text"
+                value={search.base_url}
+                onChange={(event) => setSearch({ ...search, base_url: event.target.value })}
+                placeholder="http://localhost:8080"
+                style={{ flex: 1 }}
+              />
+              <input
+                type="number"
+                min={1}
+                max={30}
+                value={search.timeout}
+                onChange={(event) =>
+                  setSearch({ ...search, timeout: Number(event.target.value) || 5 })
+                }
+                style={{ width: 72 }}
+                title="Timeout in seconds"
+              />
+            </div>
+            <span className="field__hint">
+              The agent searches the live web through a local search-neo service that
+              aggregates Baidu and Bing. No cloud key is involved. If the service is
+              unreachable the agent is told the search failed rather than allowed to
+              answer from memory.
             </span>
           </div>
         )}

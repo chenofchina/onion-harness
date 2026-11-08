@@ -76,6 +76,19 @@ MEMORY_PROMPT_HINT = (
     "details, and never claim to have remembered something you did not actually save.\n"
 )
 
+# Appended only when the web search tool is actually present. The last sentence is
+# the point: a model that treats a failed search as "nothing found" will answer
+# from memory and present it as researched.
+SEARCH_PROMPT_HINT = (
+    "\n## Web search\n"
+    "You have a web_search tool. Use it when the answer depends on facts that "
+    "change over time (news, prices, versions, current events) or on documentation "
+    "you do not have. Cite the sources it returns.\n"
+    "If it reports an error, the search failed - say so plainly and do not answer "
+    "from memory as though you had searched. An empty result means nothing was "
+    "found, not that the information does not exist.\n"
+)
+
 
 @dataclass
 class ModelConfig:
@@ -800,9 +813,22 @@ class OnionRuntime:
             hint += MEMORY_PROMPT_HINT
         if skill_lines:
             hint += "\nMounted skills:\n" + "\n".join(skill_lines) + "\n"
-        mcp_names = [tool.name for tool in self._extra_tools]
+        # Web search tools are injected alongside MCP tools, but they are not MCP tools
+# and the model should not be told they are. Listing them separately also gives a
+# place to state the one rule that keeps a search from becoming a hallucination.
+        web_search = [
+            tool for tool in self._extra_tools
+            if (tool.metadata or {}).get("kind") == "web-search"
+        ]
+        mcp_tools = [
+            tool for tool in self._extra_tools
+            if (tool.metadata or {}).get("kind") != "web-search"
+        ]
+        mcp_names = [tool.name for tool in mcp_tools]
         if mcp_names:
             hint += "\nMCP tools available: " + ", ".join(mcp_names) + "\n"
+        if web_search:
+            hint += SEARCH_PROMPT_HINT
         composed = (base + hint).strip()
         composed = compose_persona_overlay(persona, composed)
         if memory_block:

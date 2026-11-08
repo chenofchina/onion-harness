@@ -74,6 +74,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # Automatic safety review, applied to destructive tool calls only. Missing in
     # the file means the defaults in ReviewConfig apply.
     "auto_review": {},
+    # Local search-neo endpoint. Empty means the built-in localhost:8080 default.
+    "web_search": {},
     # Provider ids that hold a key in the credential store. Values live there.
     "key_providers": [],
 }
