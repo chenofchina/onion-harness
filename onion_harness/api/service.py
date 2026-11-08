@@ -136,6 +136,9 @@ class OnionService:
         self._active: Dict[str, asyncio.Task] = {}
         self._roundtables: Dict[str, Any] = {}
         self._lock = threading.RLock()
+        # Workspace state captured before each task, so the diff view can show
+        # what that task actually changed rather than the whole session.
+        self._file_snapshots: Dict[str, Any] = {}
 
         # Transcripts written before encryption was added are sealed on first
         # start. Doing it here (rather than lazily on read) means the plaintext
@@ -340,6 +343,115 @@ class OnionService:
         for cls in self._executor_classes():
             if self.executors.get(cls.name) is None:
                 self.executors.register(cls(self.sandbox))
+
+    # -- workspace browsing ------------------------------------------------
+    def _workspace_root(self) -> Optional[Path]:
+        """The directory the browser may show, or None when unset.
+
+        Browsing without a configured workspace would expose the process's own
+        working directory, which may be the application install. Refusing is the
+        safer default and the GUI explains why the panel is empty.
+        """
+        raw = self.sandbox.workspace_root
+        if not raw:
+            return None
+        root = Path(raw)
+        return root if root.is_dir() else None
+
+    def workspace_tree(
+        self, path: str = "", depth: int = 1, task_id: str = ""
+    ) -> Dict[str, Any]:
+        """Browse the workspace, marking files the given task changed."""
+        from onion_harness.sandbox.workspace import WorkspaceError, diff_workspace, list_tree
+
+        root = self._workspace_root()
+        if root is None:
+            return {"root": "", "entries": [], "error": "no workspace configured"}
+
+        changed: set = set()
+        snapshot = self._file_snapshots.get(task_id) if task_id else None
+        if snapshot is not None:
+            try:
+                changed = {change.path for change in diff_workspace(root, snapshot, include_text=False)}
+            except Exception:  # noqa: BLE001 - the marker is a nicety, not essential
+                changed = set()
+
+        try:
+            entries = list_tree(root, path, depth=depth, changed=changed)
+        except WorkspaceError as exc:
+            raise ApiError(str(exc), status=400) from exc
+        return {
+            "root": str(root),
+            "path": path,
+            "entries": [entry.to_dict() for entry in entries],
+        }
+
+    def workspace_file(self, path: str) -> Dict[str, Any]:
+        from onion_harness.sandbox.workspace import read_file
+
+        root = self._workspace_root()
+        if root is None:
+            raise ApiError("no workspace configured", status=409)
+        view = read_file(root, path)
+        if view.error and not view.text:
+            # A missing or unreadable file is a 404; a binary file is still a 200
+            # with a reason, because the request was valid.
+            status = 404 if "not found" in view.error else 400
+            raise ApiError(view.error, status=status)
+        return view.to_dict()
+
+    def task_file_changes(self, task_id: str) -> Dict[str, Any]:
+        """What this task changed on disk, with before/after bodies."""
+        from onion_harness.sandbox.workspace import diff_workspace
+
+        snapshot = self._file_snapshots.get(task_id)
+        if snapshot is None:
+            return {"task_id": task_id, "changes": [], "note": "no snapshot for this task"}
+        root = self._workspace_root()
+        if root is None:
+            return {"task_id": task_id, "changes": [], "note": "no workspace configured"}
+        changes = diff_workspace(root, snapshot)
+        return {"task_id": task_id, "changes": [change.to_dict() for change in changes]}
+
+    def _take_snapshot(self, task_id: str) -> None:
+        from onion_harness.sandbox.workspace import FileSnapshot
+
+        root = self._workspace_root()
+        if root is None:
+            return
+        try:
+            self._file_snapshots[task_id] = FileSnapshot.take(root)
+        except Exception:  # noqa: BLE001 - a diff view must not block a task
+            logger.debug("could not snapshot the workspace", exc_info=True)
+
+    def _publish_file_changes(self, task_id: str) -> None:
+        """Emit a card for each file this task changed.
+
+        Emitted as ordinary events so the change appears inline in the transcript,
+        next to the message that caused it, and survives a reload.
+        """
+        from onion_harness.sandbox.workspace import diff_workspace
+
+        snapshot = self._file_snapshots.get(task_id)
+        root = self._workspace_root()
+        if snapshot is None or root is None:
+            return
+        try:
+            changes = diff_workspace(root, snapshot, include_text=False)
+        except Exception:  # noqa: BLE001
+            logger.debug("could not diff the workspace", exc_info=True)
+            return
+        if not changes:
+            return
+        summary = event(
+            EventType.FILE_CHANGED,
+            task_id,
+            source=Layer.API,
+            count=len(changes),
+            files=[change.summary() for change in changes],
+        )
+        self.bus.publish(summary.to_dict())
+        self.store.append_event(task_id, summary.to_dict())
 
     # -- object graph for the GUI ------------------------------------------
     def bootstrap(self) -> Dict[str, Any]:
@@ -910,6 +1022,7 @@ class OnionService:
         self.bus.publish(user_event.to_dict())
         self.store.append_event(task.id, user_event.to_dict())
         record["user_event"] = user_event.to_dict()
+        self._take_snapshot(task.id)
         self._start_run(task, model)
         return record
 
@@ -931,6 +1044,9 @@ class OnionService:
                         status = onion_event.payload.get("status", status)
                     elif onion_event.type is EventType.TASK_DONE:
                         status = onion_event.payload.get("status", status)
+                        # Published before task-done closes the UI's run state, so
+                        # the change cards appear in the transcript immediately.
+                        self._publish_file_changes(task.id)
                         self._finish_task(task.id, status, onion_event.payload.get("usage", {}))
             except asyncio.CancelledError:
                 status = "cancelled"
@@ -1198,6 +1314,8 @@ class OnionService:
         # Returned so the GUI renders this exact event instead of making its own.
         original["user_event"] = user_event.to_dict()
 
+        if task_id not in self._file_snapshots:
+            self._take_snapshot(task_id)
         self._start_run(task, model, history=history)
         return original
 
@@ -1276,6 +1394,8 @@ class OnionService:
         self.store.append_event(task_id, system_event.to_dict())
         original["user_event"] = system_event.to_dict()
 
+        if task_id not in self._file_snapshots:
+            self._take_snapshot(task_id)
         self._start_run(task, model)
         return original
 

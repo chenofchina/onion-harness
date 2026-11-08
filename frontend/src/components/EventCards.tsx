@@ -19,6 +19,7 @@ import type { ChangeRecord, OnionEvent, Revision } from '../lib/api'
 import { Markdown } from './Markdown'
 import { ApprovalCard } from './TaskActions'
 import { UIRenderer } from './UIRenderer'
+import { FileChangeCard } from './WorkspaceBrowser'
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -695,6 +696,7 @@ export type EventActions = {
   onRevert: (version: number) => void
   onResolveApproval?: (approvalId: string, approved: boolean) => void
   onUIAction?: (actionId: string) => void
+  onOpenFile?: (path?: string) => void
   onOpenSettings?: () => void
   busyChangeId?: string | null
 }
@@ -747,6 +749,8 @@ export function renderEvent(
       if (!Array.isArray(p.nodes) || p.nodes.length === 0) return null
       return <UIRenderer nodes={p.nodes} onAction={(id) => actions.onUIAction?.(id)} />
     }
+    case 'file-changed':
+      return <FileChangeCard files={p.files || []} onOpen={(path) => actions.onOpenFile?.(path)} />
     case 'plan-proposed':
       return <PlanCard goal={p.goal} steps={p.steps || []} />
     case 'review-decided':

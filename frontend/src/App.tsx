@@ -102,6 +102,7 @@ function Shell() {
 
   // Sidecar preview
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [focusFilePath, setFocusFilePath] = useState('')
   const [previewMode, setPreviewMode] = useState<PreviewMode>('web')
   const [previewUrl, setPreviewUrl] = useState('')
 
@@ -957,6 +958,11 @@ function Shell() {
       onRevert: revertVersion,
       onResolveApproval: resolveApproval,
       onUIAction: sendUIAction,
+      onOpenFile: (path?: string) => {
+        setFocusFilePath(path || '')
+        setPreviewMode('diff')
+        setPreviewOpen(true)
+      },
       onOpenSettings: () => setDialog('settings'),
       busyChangeId,
     }),
@@ -1222,6 +1228,8 @@ function Shell() {
               events={events}
               proposals={proposals}
               onPickedElement={(snippet) => setPrompt((current) => `${snippet}${current}`)}
+              taskId={activeTaskId}
+              focusPath={focusFilePath}
             />
           </div>
         </div>

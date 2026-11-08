@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Columns2,
   Crosshair,
@@ -8,7 +8,14 @@ import {
   Terminal,
   X,
 } from 'lucide-react'
-import type { ChangeRecord, OnionEvent } from '../lib/api'
+import { api, type ChangeRecord, type FileView, type OnionEvent } from '../lib/api'
+import {
+  DiffBlock,
+  DiffBlocks,
+  FileBrowser,
+  FileViewer,
+  useTaskDiff,
+} from './WorkspaceBrowser'
 
 /**
  * Sidecar preview panel.
@@ -32,6 +39,8 @@ type Props = {
   events: OnionEvent[]
   proposals: ChangeRecord[]
   onPickedElement: (snippet: string) => void
+  taskId?: string | null
+  focusPath?: string
 }
 
 export function SidecarPreview({
@@ -44,6 +53,8 @@ export function SidecarPreview({
   events,
   proposals,
   onPickedElement,
+  taskId = null,
+  focusPath = '',
 }: Props) {
   const [width, setWidth] = useState(440)
   const dragging = useRef(false)
@@ -143,7 +154,15 @@ export function SidecarPreview({
         />
       )}
       {mode === 'terminal' && <TerminalMirror events={events} />}
-      {mode === 'diff' && <DiffPane proposals={proposals} events={events} />}
+      {mode === 'diff' && (
+        <WorkspaceDiff
+          taskId={taskId}
+          proposals={proposals}
+          events={events}
+          open={open}
+          focusPath={focusPath}
+        />
+      )}
     </aside>
   )
 }
@@ -329,69 +348,163 @@ function TerminalMirror({ events }: { events: OnionEvent[] }) {
 
 /* ------------------------------------------------------------------ diff */
 
-function DiffPane({ proposals, events }: { proposals: ChangeRecord[]; events: OnionEvent[] }) {
-  const candidates = useMemo(() => {
+/**
+ * The workspace panel: a file browser plus what this task changed.
+ *
+ * The previous version only listed ChangeLedger proposals, so files the agent
+ * edited during normal work were invisible. This shows the workspace itself and
+ * the diff of the current task, with two ways in: pick a changed file from the
+ * task list, or browse any file in the tree.
+ */
+function WorkspaceDiff({
+  taskId,
+  proposals,
+  events,
+  open,
+  focusPath,
+}: {
+  taskId: string | null
+  proposals: ChangeRecord[]
+  events: OnionEvent[]
+  open: boolean
+  focusPath: string
+}) {
+  const { changes: taskChanges, loading, note } = useTaskDiff(taskId, open)
+  const [tab, setTab] = useState<'changes' | 'browse'>('changes')
+  const [selectedFile, setSelectedFile] = useState<string>('')
+  const [view, setView] = useState<FileView | null>(null)
+  const [viewError, setViewError] = useState('')
+
+  // Files flagged by the task event, so the tree can mark them even when the
+  // diff request has not landed yet.
+  const changedPaths = useMemo(() => {
+    const set = new Set<string>()
+    for (const change of taskChanges) set.add(change.path)
+    for (const event of events) {
+      if (event.type !== 'file-changed') continue
+      for (const file of event.payload.files || []) {
+        if (file?.path) set.add(String(file.path))
+      }
+    }
+    return set
+  }, [taskChanges, events])
+
+  const ledger = useMemo(() => {
     const fromEvents = events
       .filter((event) => event.type === 'change-proposal' && event.payload.change)
       .map((event) => event.payload.change as ChangeRecord)
-    const merged = [...proposals, ...fromEvents]
     const seen = new Set<string>()
-    return merged.filter((change) => {
+    return [...proposals, ...fromEvents].filter((change) => {
       if (seen.has(change.id)) return false
       seen.add(change.id)
       return true
     })
   }, [proposals, events])
 
-  const [selected, setSelected] = useState(0)
-  const change = candidates[Math.min(selected, candidates.length - 1)]
+  const openFile = useCallback((path: string) => {
+    setSelectedFile(path)
+    setViewError('')
+    api
+      .workspaceFile(path)
+      .then((data) => setView(data))
+      .catch((exc) => {
+        setView(null)
+        setViewError(exc instanceof Error ? exc.message : String(exc))
+      })
+  }, [])
 
-  if (candidates.length === 0) {
-    return (
-      <div className="sidecar__body">
-        <div className="sidecar__empty">
-          <Columns2 size={28} />
-          <p>No change to compare yet.</p>
-          <span>When the agent proposes a self-modification, its before/after appears here.</span>
-        </div>
-      </div>
-    )
-  }
+  // A change card opens the panel already focused on its file.
+  useEffect(() => {
+    if (open && focusPath) setSelectedFile(focusPath)
+  }, [open, focusPath])
+
+  useEffect(() => {
+    if (open && selectedFile) openFile(selectedFile)
+  }, [open, selectedFile, openFile])
+
+  const selectedChange = taskChanges.find((change) => change.path === selectedFile)
 
   return (
     <div className="sidecar__body sidecar__body--diff">
-      <div className="sidecar__diff-list">
-        {candidates.map((item, index) => (
-          <button
-            key={item.id}
-            className="sidecar__diff-chip"
-            data-active={index === Math.min(selected, candidates.length - 1)}
-            onClick={() => setSelected(index)}
-          >
-            {item.label}
-            <small>{item.target}</small>
-          </button>
-        ))}
+      <div className="ws-tabs">
+        <button
+          type="button"
+          data-active={tab === 'changes'}
+          onClick={() => setTab('changes')}
+        >
+          This task {taskChanges.length > 0 && `(${taskChanges.length})`}
+        </button>
+        <button type="button" data-active={tab === 'browse'} onClick={() => setTab('browse')}>
+          Files
+        </button>
       </div>
 
-      <div className="sidecar__diff-panes">
-        {change.diff.map((hunk, index) => (
-          <div key={index} className="sidecar__diff-block">
-            <div className="sidecar__diff-path">{hunk.path}</div>
-            <div className="sidecar__diff-grid">
-              <pre className="sidecar__diff-col" data-side="before">
-                {stringify(hunk.before)}
-              </pre>
-              <pre className="sidecar__diff-col" data-side="after">
-                {stringify(hunk.after)}
-              </pre>
-            </div>
+      {tab === 'browse' ? (
+        <div className="ws-split">
+          <FileBrowser
+            onSelect={(entry) => openFile(entry.path)}
+            changedPaths={changedPaths}
+            selectedPath={selectedFile}
+            taskId={taskId || ''}
+          />
+          <div className="ws-viewer">
+            {!selectedFile && (
+              <div className="sidecar__empty">
+                <Columns2 size={24} />
+                <p>Pick a file to view it.</p>
+                <span>Files changed by this task are marked with a dot.</span>
+              </div>
+            )}
+            {selectedFile && viewError && <div className="sidecar__note">{viewError}</div>}
+            {selectedFile && view && (
+              <FileViewer
+                path={view.path}
+                text={view.text}
+                language={view.language}
+                binary={view.binary}
+                truncated={view.truncated}
+                error={view.error}
+              />
+            )}
           </div>
-        ))}
-        {change.diff.length === 0 && (
-          <div className="sidecar__note">This proposal has no structured diff.</div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="ws-changes">
+          {loading && <span className="monitor-empty">Comparing the workspace…</span>}
+          {!loading && note && <div className="sidecar__note">{note}</div>}
+
+          {selectedChange && (
+            <div className="ws-changes__detail">
+              <DiffBlock change={selectedChange} />
+            </div>
+          )}
+
+          {!selectedChange && taskChanges.length > 0 && (
+            <DiffBlocks changes={taskChanges} />
+          )}
+
+          {!loading && taskChanges.length === 0 && !note && (
+            <div className="sidecar__empty">
+              <Columns2 size={26} />
+              <p>This task did not change any files.</p>
+              <span>Edits the agent makes in the workspace appear here with a diff.</span>
+            </div>
+          )}
+
+          {ledger.length > 0 && (
+            <div className="ws-ledger">
+              <span className="popover-section__label">Onion changes</span>
+              {ledger.map((item) => (
+                <div key={item.id} className="ws-ledger__row">
+                  <span className="badge" data-status="proposed">{item.kind}</span>
+                  <span>{item.label}</span>
+                  <small>{item.target}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

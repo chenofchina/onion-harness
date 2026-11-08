@@ -411,7 +411,36 @@ Three rules hold regardless of configuration:
 
 Configure it in Settings or via `auto_review` in the settings payload.
 
+### Workspace diff and file browser
+
+The diff panel used to show only ChangeLedger proposals — meta-operations on Onion's
+own configuration. Files the agent actually edited while working were invisible.
+
+Now the panel has two views:
+
+* **This task** — a unified diff of everything the current task changed, with real
+  before/after bodies and an accurate `+N -M` count per file.
+* **Files** — a browsable workspace tree. Directories expand on click; files changed
+  by the current task carry a dot.
+
+And the transcript shows a **change card** after any task that touched files, listing
+each path with its kind. Clicking a path opens the diff focused on that file. The
+transcript is the record; you never have to go looking.
+
+How the change is detected matters. A snapshot of the workspace (content hash plus
+text) is taken before each task and compared after. It is taken from the filesystem,
+not inferred from tool output: a shell command can create, delete or rewrite anything,
+and parsing the command text would be wrong more often than right. Hashing rather than
+mtime is what catches an edit that lands in the same second as the snapshot.
+
+**Paths are resolved and then checked against the workspace root.** `../x`,
+`subdir/../../x`, absolute paths and Windows junctions are all refused — a junction
+looks like an ordinary subdirectory until the path is resolved, which is why the check
+is on the resolved path rather than the string. Without a configured workspace the
+browser stays empty rather than falling back to the process working directory.
+
 ### Hybrid output: Markdown + interactive UI
+
 
 Replies are not limited to prose. The model may emit a `<ui>` block containing
 limited HTML, and the GUI renders it as real components:

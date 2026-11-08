@@ -163,6 +163,19 @@ def _make_handler(service: OnionService, static_dir: Optional[Path]):
                 return self._json(service.memory_forget(match.group(1)))
             if match and method in ("PATCH", "POST"):
                 return self._json(service.memory_update(match.group(1), body))
+            if method == "GET" and path == "/api/workspace":
+                return self._json(
+                    service.workspace_tree(
+                        query.get("path", [""])[0],
+                        int(query.get("depth", ["1"])[0] or 1),
+                        query.get("task_id", [""])[0],
+                    )
+                )
+            if method == "GET" and path == "/api/workspace/file":
+                return self._json(service.workspace_file(query.get("path", [""])[0]))
+            match = re.match(r"^/api/tasks/([^/]+)/files$", path)
+            if match and method == "GET":
+                return self._json(service.task_file_changes(match.group(1)))
             if method == "GET" and path == "/api/tasks/archived":
                 return self._json({"tasks": service.archived_tasks()})
             if method == "GET" and path == "/api/settings":

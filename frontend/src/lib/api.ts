@@ -259,6 +259,34 @@ export type Settings = {
   web_search?: Partial<WebSearchConfig>
 }
 
+export type FileEntry = {
+  path: string
+  name: string
+  is_dir: boolean
+  size: number
+  modified: number
+  changed: boolean
+}
+
+export type FileView = {
+  path: string
+  text: string
+  language: string
+  size: number
+  binary: boolean
+  truncated: boolean
+  error: string
+}
+
+export type FileChange = {
+  path: string
+  kind: 'added' | 'modified' | 'deleted'
+  before: string
+  after: string
+  diff: string
+  truncated: boolean
+}
+
 export type UINodeSpec = {
   tag: string
   attrs?: Record<string, string>
@@ -454,6 +482,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(seat),
     }),
+  workspaceTree: (path = '', depth = 1, taskId = '') =>
+    request<{ root: string; path: string; entries: FileEntry[]; error?: string }>(
+      `/workspace?path=${encodeURIComponent(path)}&depth=${depth}` +
+        (taskId ? `&task_id=${encodeURIComponent(taskId)}` : ''),
+    ),
+  workspaceFile: (path: string) =>
+    request<FileView>(`/workspace/file?path=${encodeURIComponent(path)}`),
+  taskFiles: (taskId: string) =>
+    request<{ task_id: string; changes: FileChange[]; note?: string }>(`/tasks/${taskId}/files`),
   uiAction: (taskId: string, actionId: string) =>
     request<TaskRecord>(`/tasks/${taskId}/ui-action`, {
       method: 'POST',

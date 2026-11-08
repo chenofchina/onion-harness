@@ -81,6 +81,10 @@ class EventType(str, Enum):
     PLAN_STEP = "plan-step"
     RAG_RETRIEVED = "rag-retrieved"
 
+    # A task changed files on disk. Emitted so the transcript can show a card with
+    # the diff, instead of the user having to go looking in a separate panel.
+    FILE_CHANGED = "file-changed"
+
 
 @dataclass(frozen=True)
 class OnionEvent:
