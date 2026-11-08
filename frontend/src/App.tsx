@@ -904,6 +904,7 @@ function Shell() {
       onReject: rejectChange,
       onRevert: revertVersion,
       onResolveApproval: resolveApproval,
+      onOpenSettings: () => setDialog('settings'),
       busyChangeId,
     }),
     [applyChange, rejectChange, revertVersion, resolveApproval, busyChangeId],
@@ -920,6 +921,7 @@ function Shell() {
 
   const showEmpty = events.length === 0
   const mcpTools: McpToolRecord[] = boot?.mcp_tools || []
+  const personas = boot?.personas || []
   const modes = boot?.modes || []
   const elevationLevels = boot?.elevation_levels || []
 
@@ -1102,6 +1104,9 @@ function Shell() {
                 onElevationChange={(id) => updateSetting({ elevation: id })}
                 mode={currentMode}
                 modes={modes}
+                personas={personas}
+                activePersonaId={settings?.active_persona || 'default'}
+                onPersonaChange={(id) => updateSetting({ active_persona: id })}
                 attachments={attachments}
                 onAttachmentsChange={setAttachments}
                 onOpenAdvanced={() => setAdvancedOpen(true)}
@@ -1186,6 +1191,12 @@ function Shell() {
           mcpCount={mcpTools.length}
           onOpenArchive={() => setDialog('archive')}
           onOpenMcp={() => setDialog('mcp')}
+          autoReview={boot.auto_review}
+          onSaveAutoReview={async (patch) => {
+            const next = await api.updateSettings({ auto_review: patch })
+            setSettings(next)
+            refreshBoot()
+          }}
           onClose={() => setDialog(null)}
           onSaved={saveSettings}
         />

@@ -315,6 +315,7 @@ class SessionFactory:
         model: str,
         max_turns: int,
         temperature: Optional[float],
+        top_p: Optional[float] = None,
     ):
         """Build engine options.
 
@@ -326,6 +327,12 @@ class SessionFactory:
 
         require_engine()
         policy = PermissionAdapter(allowed_tools)
+        # ``top_p`` has no first-class engine option, so it rides the generic
+        # kwargs channel the engine forwards to every provider call. This is how
+        # a persona switch takes effect on the very next request.
+        extra_kwargs: Dict[str, Any] = {}
+        if top_p is not None:
+            extra_kwargs["top_p"] = top_p
         options = EngineOptions(
             llm=provider,
             allowed_tools=sorted(set(allowed_tools)) or ["__none__"],
@@ -333,6 +340,7 @@ class SessionFactory:
             max_turns=max_turns,
             model=model,
             temperature=temperature,
+            extra_llm_kwargs=extra_kwargs,
             permission_policy=policy.engine_policy(),
         )
         return options, policy, tools

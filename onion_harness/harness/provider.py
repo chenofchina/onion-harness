@@ -138,6 +138,7 @@ class AnthropicProvider(ReasoningCapture, EngineProviderBase):
         model: str,
         timeout: float = 120.0,
         temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
         max_tokens: int = 8192,
         thinking_budget: int = 0,
         extra_headers: Optional[Dict[str, str]] = None,
@@ -149,6 +150,7 @@ class AnthropicProvider(ReasoningCapture, EngineProviderBase):
         self.model = model
         self.timeout = timeout
         self.temperature = temperature
+        self.top_p = top_p
         self.max_tokens = max_tokens
         self.thinking_budget = max(0, thinking_budget)
         self.api_version = api_version
@@ -173,6 +175,7 @@ class AnthropicProvider(ReasoningCapture, EngineProviderBase):
             model=model or self.model,
             timeout=self.timeout,
             temperature=self.temperature,
+            top_p=self.top_p,
             max_tokens=self.max_tokens,
             thinking_budget=self.thinking_budget,
             extra_headers=dict(self.extra_headers),
@@ -196,14 +199,20 @@ class AnthropicProvider(ReasoningCapture, EngineProviderBase):
 
         budget = int(kwargs.pop("thinking_budget", self.thinking_budget) or 0)
         if budget > 0:
-            # Extended thinking requires headroom above the thinking budget and
-            # is incompatible with an explicit temperature.
+            # Extended thinking requires headroom above the thinking budget, and
+            # the API rejects an explicit temperature *or* top_p alongside it.
+            # Both are dropped here rather than left to a provider-side 400.
+            kwargs.pop("temperature", None)
+            kwargs.pop("top_p", None)
             payload["max_tokens"] = max(payload["max_tokens"], budget + 4096)
             payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
         else:
             temperature = kwargs.pop("temperature", self.temperature)
             if temperature is not None:
                 payload["temperature"] = temperature
+            top_p = kwargs.pop("top_p", self.top_p)
+            if top_p is not None:
+                payload["top_p"] = top_p
 
         url = f"{self.base_url}/messages"
         try:
@@ -473,6 +482,7 @@ def build_provider(
     *,
     wire_format: str = "openai",
     temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
     thinking_budget: int = 0,
     timeout: float = 180.0,
 ) -> Any:
@@ -490,6 +500,7 @@ def build_provider(
             model=model,
             timeout=timeout,
             temperature=temperature,
+            top_p=top_p,
             thinking_budget=thinking_budget,
         )
 

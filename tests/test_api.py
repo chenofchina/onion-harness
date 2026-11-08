@@ -145,8 +145,12 @@ class TaskApiTest(ServiceTestBase):
         self.wait_for_done(record["id"])
         path = self.dir / "tasks" / f"{record['id']}.jsonl"
         self.assertTrue(path.exists())
-        lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+        # Transcripts are sealed line by line, so the file is read back through
+        # the store rather than parsed directly.
+        lines = self.service.store.load_events(record["id"])
         self.assertTrue(any(event["type"] == "task-done" for event in lines))
+        # And the raw bytes must not contain the prompt.
+        self.assertNotIn(b"persist me", path.read_bytes())
 
     def test_missing_prompt_rejected(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:

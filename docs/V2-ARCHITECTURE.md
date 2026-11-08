@@ -385,9 +385,15 @@ PBKDF2-HMAC-SHA256（20 万轮）派生。每条记录用独立随机 nonce，no
 命中语义不变（词元精确匹配，bm25 排序照常），文件里则只剩十六进制摘要。测试
 `test_no_plaintext_anywhere_in_the_file` 逐词扫描原始字节验证这一点。
 
-**尚未加密**：会话事件流（`tasks/*.jsonl`）与任务 prompt 仍是明文。这是下一步的工作，
-做法与记忆一致——复用 `DataCipher`，只是 JSONL 需要按行加密或整文件加密。账本不加密
-（只有配置快照），但会提示用户。
+**已加密（补充实现）**：会话事件流 `tasks/*.jsonl` 逐行 sealed（每行一个
+`onion:v1:` + base64 AES-GCM），任务索引 `tasks.json` 整文件 sealed。两者都能兼容
+读取旧版明文并在启动时自动迁移（`migrate_plaintext_events` 已对本机 41 个真实转录
+与 41 条索引执行过，迁移后仍可正常读回）。
+
+`settings.json` 保持明文 JSON：其中只有 provider id、窗口大小和开关，没有任何对话
+内容。这样出问题时仍然可以直接打开检查，不需要先解密。
+
+账本不加密（只有配置快照）。
 
 **这里有个必须你决定的权衡**：如果要求「没有主密码任何文件都读不了」，那应用每次启动都要你输密码。要么接受这个摩擦，要么接受磁盘上的数据可读。
 
@@ -400,13 +406,13 @@ PBKDF2-HMAC-SHA256（20 万轮）派生。每条记录用独立随机 nonce，no
 | ✅ | UI 间距修正 | 已完成 |
 | ✅ | 密钥迁移到凭据管理器 + AES-256-GCM 加密 | 已完成 |
 | ✅ | RAG 存储 + 规则提取 + 静默注入 | 已完成 |
-| 1 | Persona（复用 prompt segment + Temperature/Top_P 热切换） | 待做 |
-| 2 | Auto-Review（含 fail-closed 与 UI 报错） | 待做 |
-| 3 | 会话事件流加密（复用 DataCipher） | 待做 |
-| 4 | RAG 向量检索（sqlite-vec） | 待做 |
+| ✅ | Persona（prompt 叠加 + Temperature/Top_P 热切换） | 已完成 |
+| ✅ | Auto-Review（启发式预筛 + fail-closed + UI 报错） | 已完成 |
+| ✅ | 会话事件流与任务索引加密（复用 DataCipher） | 已完成 |
+| 1 | RAG 向量检索（sqlite-vec） | 待做 |
 
-建议顺序：1 → 2 → 3 → 4。密钥与记忆先于其他所有功能，是因为其他模块都建立在
-「有 key 可调、有上下文可查」之上。
+剩下的唯一一项是向量检索。当前是纯 FTS5（盲索引），中文召回已经可用；加向量是为了
+抓住同义改写，属于质量提升而非缺失功能。
 
 ---
 

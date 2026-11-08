@@ -326,6 +326,56 @@ written to `~/.onionharness/mcp/<name>/tool.py`, hot-loaded into the tool
 registry, and recorded in the change ledger, so it can be disabled, deleted or
 rolled back.
 
+### Personas
+
+A persona changes **tone and sampling only**. It has no field that could relax a
+safety rule — no mode, no elevation, no tool permission — so Plan still refuses
+writes and Standard still asks for approval whichever persona is active. That is
+structural, not a promise: the persona overlay is stacked into the system prompt
+*after* the core rules and *before* the mode contract, and the mode contract is
+appended last in a single place.
+
+Five built-ins ship (Default, Deliberator, Operator, Auditor, Mentor). Each
+carries a `temperature` and `top_p` that apply on the **next request** — no
+restart. A value you set explicitly on a conversation always wins over the
+persona's.
+
+Drop definition files into `~/.onionharness/personas/*.json`:
+
+```json
+{
+  "id": "terse",
+  "label": "Terse",
+  "description": "Few words, no preamble.",
+  "overlay": "Answer in as few words as possible. No preamble, no summary.",
+  "sampling": { "temperature": 0.4, "top_p": 0.8 }
+}
+```
+
+Both sampling values are **required**. A file missing either one is rejected with
+a message in the payload rather than silently inheriting a temperature — a
+persona that quietly changes your sampling is exactly the surprise this system
+must not produce.
+
+### Automatic safety review
+
+Before a **destructive** command reaches the sandbox, a cheap model reviews it
+and answers `PASS` or `REJECT`. Reads and harmless writes skip review entirely,
+so the gate costs nothing on ordinary work.
+
+Three rules hold regardless of configuration:
+
+* Review is a gate **in front of** the sandbox and the approval card, never a
+  replacement. A passed review in Standard mode still shows the approval card.
+* When the reviewer cannot answer — no key, timeout, unusable reply — the call is
+  refused (`fail_closed`). The message says the *reviewer was unavailable*, not
+  that the code was dangerous, so a broken service never teaches you to ignore
+  the warning.
+* The reviewer sees the code only, never the conversation, so it cannot be talked
+  into approving something.
+
+Configure it in Settings or via `auto_review` in the settings payload.
+
 ### Long-term memory
 
 Memory runs silently: it is not a feature you switch on and manage, it is what
@@ -418,8 +468,9 @@ Defaults to `~/.onionharness`, overridable with `ONION_DATA_DIR` or `--data-dir`
 
 ```
 settings.json          settings, plus the list of providers that have a key
-tasks.json             task index
-tasks/<id>.jsonl       full event stream per task
+tasks.json             task index (sealed)
+tasks/<id>.jsonl       full event stream per task (sealed, one line per event)
+personas/<id>.json     custom persona definitions
 ledger.sqlite3         change revisions, pending proposals, materialised state
 memory.sqlite3         long-term memory: AES-256-GCM ciphertext, blind search index
 mcp/<name>/tool.py     generated MCP tools (hot-loaded, ledger-audited)

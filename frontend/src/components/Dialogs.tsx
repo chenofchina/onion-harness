@@ -1,6 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Archive, Check, Cloud, KeyRound, Puzzle, RotateCcw, Trash2, X } from 'lucide-react'
-import { api, type ProviderPreset, type Revision, type Settings, type ThinkingLevel } from '../lib/api'
+import {
+  Archive,
+  Check,
+  Cloud,
+  KeyRound,
+  Puzzle,
+  RotateCcw,
+  ShieldCheck,
+  Trash2,
+  X,
+} from 'lucide-react'
+import {
+  api,
+  type AutoReviewConfig,
+  type ProviderPreset,
+  type Revision,
+  type Settings,
+  type ThinkingLevel,
+} from '../lib/api'
 import { LobeIcon } from './LobeIcon'
 import { useTheme, type ThemeMode } from '../lib/theme'
 
@@ -363,6 +380,8 @@ export function SettingsDialog({
   mcpCount = 0,
   onOpenArchive,
   onOpenMcp,
+  autoReview,
+  onSaveAutoReview,
 }: {
   settings: Settings
   onClose: () => void
@@ -372,6 +391,8 @@ export function SettingsDialog({
   mcpCount?: number
   onOpenArchive?: () => void
   onOpenMcp?: () => void
+  autoReview?: AutoReviewConfig
+  onSaveAutoReview?: (patch: Partial<AutoReviewConfig>) => Promise<void>
 }) {
   const { mode, setMode } = useTheme()
   const [workspace, setWorkspace] = useState(settings.workspace)
@@ -379,6 +400,7 @@ export function SettingsDialog({
   const [keepRecent, setKeepRecent] = useState(settings.keep_recent_messages)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [review, setReview] = useState<AutoReviewConfig | undefined>(autoReview)
 
   const save = async () => {
     setBusy(true)
@@ -390,6 +412,7 @@ export function SettingsDialog({
         keep_recent_messages: Number(keepRecent),
         theme_mode: mode,
       })
+      if (review && onSaveAutoReview) await onSaveAutoReview(review)
       onSaved(next)
       onClose()
     } catch (exc) {
@@ -477,6 +500,31 @@ export function SettingsDialog({
           <input type="text" value={dataDir} readOnly />
           <span className="field__hint">Task history, settings and the change ledger live here.</span>
         </div>
+
+        {review && (
+          <div className="field">
+            <label>Safety review</label>
+            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+              <button
+                className="btn"
+                data-variant={review.enabled ? 'filled' : 'outlined'}
+                onClick={() => setReview({ ...review, enabled: !review.enabled })}
+                type="button"
+              >
+                <ShieldCheck size={14} /> {review.enabled ? 'On' : 'Off'}
+              </button>
+              <span className="text-muted" style={{ fontSize: '0.78rem' }}>
+                {review.model} · timeout {review.timeout_seconds}s
+              </span>
+            </div>
+            <span className="field__hint">
+              Before a destructive command runs, a cheap model reviews it and answers
+              PASS or REJECT. Only destructive snippets are checked, so reads cost
+              nothing extra. If the reviewer cannot be reached the call is refused
+              rather than run unchecked.
+            </span>
+          </div>
+        )}
 
         {(onOpenArchive || onOpenMcp) && (
           <div className="field">

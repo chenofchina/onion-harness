@@ -20,6 +20,7 @@ rows are configured.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -29,14 +30,24 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from onion_harness.api.secrets import (
+    DataCipher,
     KeyVault,
     MemorySecretStore,
     SecretError,
     SecretStore,
+    cipher_from_store,
     default_secret_store,
 )
 
 logger = logging.getLogger("onion.store")
+
+# Marks a sealed transcript line. Chosen so it cannot be confused with a JSON
+# object (which always starts with "{"), letting old and new files coexist.
+SEALED_PREFIX = "onion:v1:"
+
+
+def _is_sealed(line: str) -> bool:
+    return line.startswith(SEALED_PREFIX)
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "theme_mode": "system",
@@ -54,6 +65,15 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "base_urls": {},
     "mode": "standard",
     "elevation": "standard",
+    # Active persona id. Its sampling values apply unless a conversation sets its
+    # own, and the persona overlay is stacked into the system prompt.
+    "active_persona": "default",
+    # Per-conversation sampling overrides. ``None`` means "use the persona's".
+    "temperature": None,
+    "top_p": None,
+    # Automatic safety review, applied to destructive tool calls only. Missing in
+    # the file means the defaults in ReviewConfig apply.
+    "auto_review": {},
     # Provider ids that hold a key in the credential store. Values live there.
     "key_providers": [],
 }
@@ -112,16 +132,35 @@ def _default_store(root: Path) -> SecretStore:
 class AppStore:
     """Small JSON-backed store; atomic writes, guarded by a lock."""
 
-    def __init__(self, data_dir: str | Path, vault: Optional[KeyVault] = None) -> None:
+    def __init__(
+        self,
+        data_dir: str | Path,
+        vault: Optional[KeyVault] = None,
+        cipher: Optional[DataCipher] = None,
+    ) -> None:
         self.root = Path(data_dir)
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "tasks").mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._vault = vault or KeyVault(_default_store(self.root))
+        # Transcript encryption. When absent (no credential store) events are
+        # written as plain JSON, which is the pre-existing behaviour rather than a
+        # silent downgrade of a protected install.
+        if cipher is not None:
+            self._cipher = cipher
+        else:
+            try:
+                self._cipher = cipher_from_store(self._vault.store)
+            except Exception:  # noqa: BLE001 - keep working without encryption
+                self._cipher = None
 
     @property
     def vault(self) -> KeyVault:
         return self._vault
+
+    @property
+    def events_encrypted(self) -> bool:
+        return self._cipher is not None
 
     # -- settings -----------------------------------------------------------
     def load_settings(self) -> Dict[str, Any]:
@@ -238,19 +277,53 @@ class AppStore:
 
     # -- tasks --------------------------------------------------------------
     def load_tasks(self) -> List[Dict[str, Any]]:
-        path = self.root / "tasks.json"
-        with self._lock:
-            if not path.exists():
-                return []
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                return []
-        return raw if isinstance(raw, list) else []
+        return self._load_sealed(self.root / "tasks.json", expect=list) or []
 
     def save_tasks(self, tasks: List[Dict[str, Any]]) -> None:
         with self._lock:
-            _atomic_write_json(self.root / "tasks.json", tasks)
+            self._write_sealed(self.root / "tasks.json", tasks)
+
+    # -- sealed json documents ---------------------------------------------
+    def _load_sealed(self, path: Path, expect) -> Any:
+        """Read a document that may be sealed or plain JSON.
+
+        Task metadata carries prompts and titles, so it is sealed like the
+        transcripts. Plain files from an earlier build are still understood and
+        are rewritten sealed on the next save.
+        """
+        with self._lock:
+            if not path.exists():
+                return None
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except OSError:
+                return None
+        text = raw.strip()
+        if not text:
+            return None
+        if text.startswith(SEALED_PREFIX):
+            if self._cipher is None:
+                # No key: the document cannot be read. An empty list is honest;
+                # fabricating placeholders would be worse.
+                return None
+            try:
+                text = self._cipher.decrypt(base64.b64decode(text[len(SEALED_PREFIX):]))
+            except Exception:  # noqa: BLE001 - wrong key or corruption
+                logger.warning("could not open %s", path.name)
+                return None
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, expect) else None
+
+    def _write_sealed(self, path: Path, payload: Any) -> None:
+        body = json.dumps(payload, ensure_ascii=False, indent=2)
+        if self._cipher is not None:
+            body = SEALED_PREFIX + base64.b64encode(self._cipher.encrypt(body)).decode("ascii")
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, path)
 
     def upsert_task(self, record: Dict[str, Any]) -> None:
         with self._lock:
@@ -264,11 +337,19 @@ class AppStore:
             self.save_tasks(tasks)
 
     def append_event(self, task_id: str, payload: Dict[str, Any]) -> None:
+        """Append one event to the task's transcript.
+
+        Transcripts quote prompts, file contents and tool output, so each line is
+        sealed with the data cipher and stored as base64. One line per event is
+        kept because the stream is appended to continuously and read back
+        incrementally.
+        """
         path = self.root / "tasks" / f"{_safe(task_id)}.jsonl"
         line = json.dumps(payload, ensure_ascii=False, default=str)
         with self._lock:
             with path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+                for record in self._seal_lines([line]):
+                    handle.write(record + "\n")
 
     def load_events(self, task_id: str) -> List[Dict[str, Any]]:
         path = self.root / "tasks" / f"{_safe(task_id)}.jsonl"
@@ -276,15 +357,84 @@ class AppStore:
             return []
         out: List[Dict[str, Any]] = []
         with self._lock:
-            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    out.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            opened = self._open_line(line)
+            if opened is None:
+                continue
+            try:
+                out.append(json.loads(opened))
+            except json.JSONDecodeError:
+                continue
         return out
+
+    def migrate_plaintext_events(self) -> int:
+        """Re-seal transcripts written by a build that stored them in the clear.
+
+        Returns the number of files rewritten. Runs once per start; a file whose
+        every line already carries the marker is left untouched, so this is a
+        no-op after the first pass.
+        """
+        if self._cipher is None:
+            return 0
+        folder = self.root / "tasks"
+        if not folder.is_dir():
+            return 0
+
+        rewritten = 0
+        for path in sorted(folder.glob("*.jsonl")):
+            try:
+                raw = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            lines = [line.strip() for line in raw.splitlines() if line.strip()]
+            if not lines or all(_is_sealed(line) for line in lines):
+                continue
+            # Unsealed lines are plaintext JSON; unreadable ones were already
+            # sealed and simply could not be opened, so they are preserved as-is.
+            plain = [self._open_line(line) or line for line in lines]
+            sealed = self._seal_lines(plain)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            try:
+                tmp.write_text("\n".join(sealed) + "\n", encoding="utf-8")
+                os.replace(tmp, path)
+                rewritten += 1
+            except OSError as exc:
+                logger.error("could not encrypt %s: %s", path.name, exc)
+        if rewritten:
+            logger.info("encrypted %d plaintext transcript file(s)", rewritten)
+        return rewritten
+
+    def _seal_lines(self, lines: List[str]) -> List[str]:
+        if self._cipher is None:
+            return list(lines)
+        sealed: List[str] = []
+        for line in lines:
+            try:
+                sealed.append(
+                    SEALED_PREFIX + base64.b64encode(self._cipher.encrypt(line)).decode("ascii")
+                )
+            except Exception:  # noqa: BLE001 - never lose an event over crypto
+                logger.exception("could not seal an event line")
+                sealed.append(line)
+        return sealed
+
+    def _open_line(self, line: str) -> Optional[str]:
+        if not _is_sealed(line):
+            # A plaintext line from an older build, or an unsealed fallback.
+            return line
+        if self._cipher is None:
+            # The key is unavailable, so the transcript cannot be read. Returning
+            # None is honest: rendering ciphertext as an event would be worse.
+            return None
+        try:
+            return self._cipher.decrypt(base64.b64decode(line[len(SEALED_PREFIX):]))
+        except Exception:  # noqa: BLE001 - corrupt or wrong key
+            logger.warning("could not open a sealed event line")
+            return None
 
     def delete_task(self, task_id: str) -> None:
         with self._lock:

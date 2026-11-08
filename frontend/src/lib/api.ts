@@ -252,6 +252,27 @@ export type Settings = {
   /** Per-provider base URL overrides, including custom endpoints. */
   base_urls?: Record<string, string>
   base_url?: string
+  active_persona?: string
+  temperature?: number | null
+  top_p?: number | null
+  auto_review?: Partial<AutoReviewConfig>
+}
+
+export type PersonaOption = {
+  id: string
+  label: string
+  description: string
+  overlay: string
+  sampling: { temperature: number; top_p: number }
+  builtin: boolean
+}
+
+export type AutoReviewConfig = {
+  enabled: boolean
+  provider_id: string
+  model: string
+  timeout_seconds: number
+  fail_closed: boolean
 }
 
 export type MemoryRecord = {
@@ -284,6 +305,10 @@ export type Bootstrap = {
   elevation_levels: ElevationLevel[]
   mcp_tools: McpToolRecord[]
   memory?: MemoryStats
+  personas?: PersonaOption[]
+  persona_errors?: string[]
+  active_persona?: PersonaOption
+  auto_review?: AutoReviewConfig
   tasks: TaskRecord[]
   archived: TaskRecord[]
   history: Revision[]

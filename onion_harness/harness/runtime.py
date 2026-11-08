@@ -36,6 +36,12 @@ from onion_harness.harness.provider import (
     HistoryReplayProvider,
     build_provider,
 )
+from onion_harness.core.persona import (
+    clamp_temperature,
+    clamp_top_p,
+    compose_persona_overlay,
+    persona_for,
+)
 from onion_harness.harness.presets import THINKING_BUDGET, preset_for
 
 logger = logging.getLogger("onion.harness")
@@ -65,11 +71,15 @@ class ModelConfig:
     api_key: str = ""
     thinking: str = "off"
     temperature: Optional[float] = None
+    top_p: Optional[float] = None
     max_turns: int = 40
     context_window: int = 128_000
     keep_recent: int = 10
     mode: str = "standard"
     elevation: str = "standard"
+    # Which persona produced the sampling values, for the GUI chip. Purely
+    # informational: the persona has already been applied by this point.
+    persona_id: str = "default"
 
     @property
     def thinking_budget(self) -> int:
@@ -83,6 +93,9 @@ class ModelConfig:
             "wire_format": self.wire_format,
             "model": self.model,
             "thinking": self.thinking,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "persona_id": self.persona_id,
             "max_turns": self.max_turns,
             "context_window": self.context_window,
             "keep_recent": self.keep_recent,
@@ -125,6 +138,8 @@ class OnionRuntime:
         emit: Optional[Callable[[OnionEvent], None]] = None,
         state_provider: Optional[Callable[[], Dict[str, Any]]] = None,
         memory=None,
+        personas=None,
+        reviewer=None,
     ) -> None:
         self._ledger = ledger
         self._executors = executors
@@ -139,6 +154,11 @@ class OnionRuntime:
         # ``learn(events, task_id)``. Injected by the API layer so the harness
         # never touches the database file itself.
         self._memory = memory
+        # Persona library (built-ins + user definition files), and the automatic
+        # safety reviewer that runs before destructive tool calls reach the
+        # sandbox. Both are optional so a bare runtime still works.
+        self._personas = personas
+        self._review_gate = reviewer
         # Set by the API layer to stream raw process output to the sidecar.
         self._output_listener = None
         # Set by the API layer to forward out-of-band approval events.
@@ -286,6 +306,15 @@ class OnionRuntime:
             logger.debug("memory recall failed", exc_info=True)
             return []
 
+    def _resolve_persona(self, persona_id: Optional[str]):
+        """Look up the active persona, honouring definitions dropped on disk."""
+        try:
+            if self._personas is not None:
+                return self._personas.get(persona_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("persona lookup failed", exc_info=True)
+        return persona_for(persona_id)
+
     def _learn_from(self, session: TaskSession) -> List[Any]:
         """Persist what this run taught us. Never raises."""
         if self._memory is None:
@@ -316,9 +345,24 @@ class OnionRuntime:
         state = self._state_provider() or {}
         recalled = self._recall_for(session)
         memory_block = self._memory.prompt_for(recalled) if recalled else ""
+        # The persona is resolved here, not at construction, so switching it
+        # takes effect on the next task without restarting the runtime.
+        persona = self._resolve_persona(model.persona_id)
         system_prompt = self._compose_system_prompt(
-            state, mode=model.mode, memory_block=memory_block
+            state, mode=model.mode, memory_block=memory_block, persona=persona
         )
+        if persona is not None and persona.overlay:
+            yield self._emit_into(
+                session,
+                event(
+                    EventType.PERSONA_ACTIVE,
+                    task.id,
+                    persona_id=persona.id,
+                    label=persona.label,
+                    temperature=model.temperature,
+                    top_p=model.top_p,
+                ),
+            )
         if memory_block:
             yield self._emit_into(
                 session,
@@ -342,6 +386,7 @@ class OnionRuntime:
             model.model,
             wire_format=model.wire_format,
             temperature=model.temperature,
+            top_p=model.top_p,
             thinking_budget=model.thinking_budget,
         )
         compressor = ContextCompressor(
@@ -361,6 +406,7 @@ class OnionRuntime:
             model=model.model,
             max_turns=model.max_turns,
             temperature=model.temperature,
+            top_p=model.top_p,
         )
 
         loop = EngineLoop(options)
@@ -486,13 +532,21 @@ class OnionRuntime:
                                session: Optional[TaskSession] = None):
         async def _invoke(args: Dict[str, Any]) -> str:
             args = args or {}
+            code = str(args.get("code") or "")
+
+            # Automatic review runs first: it is a cheap gate in front of the
+            # approval card, not a replacement for it. A rejected snippet never
+            # reaches the user as a card, and never reaches the sandbox.
+            blocked = await self._review_call(executor, code, session)
+            if blocked is not None:
+                return blocked
 
             # Approval gate (Standard mode) and the Plan-mode write refusal both key off
             # the same write detection, so the two never disagree.
             from onion_harness.harness.modes import requires_approval
 
             if session is not None and requires_approval(
-                model.mode if model else None, str(args.get("code") or "")
+                model.mode if model else None, code
             ):
                 approved = await self._request_approval(executor, args, session)
                 if not approved:
@@ -505,6 +559,56 @@ class OnionRuntime:
             return outcome.model_text()
 
         return _invoke
+
+    async def _review_call(self, executor, code: str, session: Optional[TaskSession]) -> Optional[str]:
+        """Run the safety reviewer. Returns a refusal message, or None to proceed.
+
+        Emits ``review-decided`` through the approval listener, because this runs
+        inside the tool call where the event generator is already blocked.
+        """
+        gate = self._review_gate
+        if gate is None or session is None:
+            return None
+        try:
+            result = await gate.review(code, tool_name=executor.tool_name)
+        except Exception as exc:  # noqa: BLE001 - the gate must not break a run
+            logger.debug("review gate crashed", exc_info=True)
+            # A crash in our own gate is treated the same as an unreachable
+            # reviewer: fail closed, and say so honestly.
+            from onion_harness.harness.review import ReviewResult
+
+            result = ReviewResult(
+                "reject", reason=f"review crashed: {exc}", reviewer_model=""
+            )
+
+        if result.skipped:
+            return None
+
+        payload = {
+            "call_id": new_id("rev"),
+            "name": executor.tool_name,
+            "executor": executor.name,
+            "label": executor.label,
+            "preview": executor.preview(code),
+            **result.to_dict(),
+        }
+        self._record_review(session, payload)
+
+        if result.approved:
+            return None
+        return result.blocked_message()
+
+    def _record_review(self, session: TaskSession, payload: Dict[str, Any]) -> None:
+        event_obj = event(
+            EventType.REVIEW_DECIDED, session.task.id, source=Layer.HARNESS, **payload
+        )
+        session.events.append(event_obj)
+        listener = self._approval_listener
+        if listener is not None:
+            try:
+                listener(session.task.id, event_obj.to_dict())
+            except Exception:  # noqa: BLE001
+                logger.debug("review listener failed", exc_info=True)
 
     async def _request_approval(self, executor, args: Dict[str, Any], session: TaskSession) -> bool:
         """Ask the user, out of band.
@@ -607,13 +711,20 @@ class OnionRuntime:
         state: Dict[str, Any],
         mode: Optional[str] = None,
         memory_block: str = "",
+        persona: Any = None,
     ) -> str:
         """Assemble the system channel, innermost concern first.
 
-        Order matters: the base instructions and tool surface, then recalled
-        memory as background, and finally the mode contract. Putting the mode
-        contract last means its safety rules are the final thing the model reads,
-        so recalled text can never appear to override them.
+        Fixed order, and the order is the guarantee:
+
+        1. core behaviour and the tool surface,
+        2. persona overlay (tone and working style only),
+        3. recalled memory (background, explicitly not instructions),
+        4. the mode contract, always last.
+
+        The mode contract is appended last in this one place, so neither a
+        persona nor a recalled note can appear to override Plan's read-only rule
+        or Strict's anti-hallucination contract.
         """
         from onion_harness.harness.modes import compose_mode_prompt
         from onion_harness.ledger.state import compose_system_prompt
@@ -637,6 +748,7 @@ class OnionRuntime:
         if mcp_names:
             hint += "\nMCP tools available: " + ", ".join(mcp_names) + "\n"
         composed = (base + hint).strip()
+        composed = compose_persona_overlay(persona, composed)
         if memory_block:
             composed = f"{composed}\n\n{memory_block}".strip()
         return compose_mode_prompt(mode, composed)
@@ -670,6 +782,20 @@ class OnionRuntime:
         return estimate_tokens(text)
 
 
+def _resolve_sampling(explicit: Any, persona_value: float, clamp) -> float:
+    """An explicit per-request value wins; otherwise the persona's value.
+
+    ``clamp`` is the range for this particular knob: temperature spans 0-2 while
+    top_p spans 0-1, so sharing one clamp let top_p through at illegal values.
+    """
+    if explicit is None or explicit == "":
+        return clamp(persona_value)
+    try:
+        return clamp(float(explicit))
+    except (TypeError, ValueError):
+        return clamp(persona_value)
+
+
 def build_model_config(raw: Dict[str, Any], api_keys: Optional[Dict[str, str]] = None) -> ModelConfig:
     """Normalise a GUI payload into a :class:`ModelConfig`."""
     provider_id = str(raw.get("provider_id") or "deepseek")
@@ -681,13 +807,14 @@ def build_model_config(raw: Dict[str, Any], api_keys: Optional[Dict[str, str]] =
     keys = api_keys or {}
     api_key = str(raw.get("api_key") or keys.get(provider_id) or "").strip()
 
-    temperature = raw.get("temperature")
-    if temperature is not None:
-        try:
-            temperature = float(temperature)
-        except (TypeError, ValueError):
-            temperature = None
-
+    persona = persona_for(raw.get("persona_id"))
+    # Sampling resolution, in strict priority order:
+    #   1. a value the caller passed explicitly for this request,
+    #   2. the active persona's value,
+    # so switching persona never silently discards a temperature the user set on
+    # the conversation. ``None`` means "not specified" throughout.
+    temperature = _resolve_sampling(raw.get("temperature"), persona.temperature, clamp_temperature)
+    top_p = _resolve_sampling(raw.get("top_p"), persona.top_p, clamp_top_p)
     max_turns = int(raw.get("max_turns") or 40)
     context_window = int(raw.get("context_window") or 128_000)
     keep_recent = int(raw.get("keep_recent") or 10)
@@ -701,6 +828,8 @@ def build_model_config(raw: Dict[str, Any], api_keys: Optional[Dict[str, str]] =
         api_key=api_key,
         thinking=str(raw.get("thinking") or "off"),
         temperature=temperature,
+        top_p=top_p,
+        persona_id=persona.id,
         max_turns=max(1, min(max_turns, 200)),
         # The GUI allows up to 1M tokens; clamp to a sane floor and ceiling so a
         # typo cannot make the budget meaningless.

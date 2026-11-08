@@ -663,6 +663,7 @@ export type EventActions = {
   onReject: (id: string) => void
   onRevert: (version: number) => void
   onResolveApproval?: (approvalId: string, approved: boolean) => void
+  onOpenSettings?: () => void
   busyChangeId?: string | null
 }
 
@@ -702,6 +703,17 @@ export function renderEvent(
         />
       )
     }
+    case 'review-decided':
+      return (
+        <ReviewCard
+          decision={String(p.decision || '')}
+          reason={p.reason}
+          preview={p.preview}
+          reviewerModel={p.reviewer_model}
+          unavailable={Boolean(p.unavailable)}
+          onOpenSettings={actions.onOpenSettings}
+        />
+      )
     case 'tool-approval': {
       if (!actions.onResolveApproval) return null
       return (
@@ -754,4 +766,76 @@ export function renderEvent(
 
 export function ToolMonitorIcon({ executor }: { executor?: string }) {
   return <SquareTerminal size={14} />
+}
+
+/* ------------------------------------------------------- safety review */
+
+/**
+ * The outcome of an automatic safety review.
+ *
+ * The two rejection causes are worded apart on purpose: "reviewer unavailable"
+ * is a problem with the checking service, while a plain rejection means the code
+ * looked destructive. Collapsing them would teach the user to distrust a gate
+ * that is actually working.
+ */
+export function ReviewCard({
+  decision,
+  reason,
+  preview,
+  reviewerModel,
+  unavailable = false,
+  onOpenSettings,
+}: {
+  decision: string
+  reason?: string
+  preview?: string
+  reviewerModel?: string
+  unavailable?: boolean
+  onOpenSettings?: () => void
+}) {
+  const approved = decision === 'pass'
+  return (
+    <div
+      className="card card-change"
+      data-status={approved ? 'applied' : 'rejected'}
+      style={
+        approved
+          ? undefined
+          : { borderColor: 'color-mix(in srgb, var(--md-sys-color-error) 45%, transparent)' }
+      }
+    >
+      <div className="card-change__head">
+        <span
+          className="card__header-icon"
+          style={{ color: approved ? 'var(--onion-level-green)' : 'var(--md-sys-color-error)' }}
+        >
+          {approved ? <ShieldCheck size={17} /> : <ShieldAlert size={17} />}
+        </span>
+        <span className="card-change__title">
+          {approved
+            ? 'Safety review passed'
+            : unavailable
+              ? 'Review unavailable'
+              : 'Blocked by safety review'}
+        </span>
+        {reviewerModel && <span className="impact-chip">{reviewerModel}</span>}
+      </div>
+      <div className="card-change__body">
+        {preview && <div className="card-change__target">{preview}</div>}
+        <div className="card-change__reason">
+          {approved
+            ? 'The destructive part of this snippet was reviewed and allowed to run. Approval rules still apply.'
+            : unavailable
+              ? 'The reviewer could not be reached, so the call was refused rather than run unchecked.'
+              : 'This snippet looked destructive. It was not run; the agent has been asked how to proceed.'}
+        </div>
+        {reason && <div className="card-change__target text-muted">Reason: {reason}</div>}
+        {unavailable && onOpenSettings && (
+          <button className="btn" data-variant="text" onClick={onOpenSettings}>
+            Open settings
+          </button>
+        )}
+      </div>
+    </div>
+  )
 }

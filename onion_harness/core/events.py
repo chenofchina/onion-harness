@@ -67,6 +67,12 @@ class EventType(str, Enum):
     MEMORY_RECALLED = "memory-recalled"
     MEMORY_LEARNED = "memory-learned"
 
+    # Persona and safety review. Both are advisory surfaces: a persona event
+    # tells the monitor which tone is live, a review event records what the
+    # automatic gate decided before the sandbox saw the code.
+    PERSONA_ACTIVE = "persona-active"
+    REVIEW_DECIDED = "review-decided"
+
 
 @dataclass(frozen=True)
 class OnionEvent:

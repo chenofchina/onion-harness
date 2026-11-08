@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowUp,
+  BrainCircuit,
   ChevronDown,
   FolderOpen,
   Maximize2,
@@ -14,6 +15,7 @@ import {
 } from 'lucide-react'
 import type {
   ElevationLevel,
+  PersonaOption,
   ProviderPreset,
   ThinkingSlider as ThinkingSliderSpec,
 } from '../lib/api'
@@ -40,6 +42,9 @@ type Props = {
   onElevationChange: (id: string) => void
   mode: string
   modes: { id: string; label: string; description: string }[]
+  personas: PersonaOption[]
+  activePersonaId: string
+  onPersonaChange: (id: string) => void
   attachments: string[]
   onAttachmentsChange: (paths: string[]) => void
   onOpenAdvanced: () => void
@@ -66,6 +71,9 @@ export function Composer({
   elevation,
   elevationLevels,
   onElevationChange,
+  personas,
+  activePersonaId,
+  onPersonaChange,
   attachments,
   onAttachmentsChange,
   onOpenAdvanced,
@@ -76,8 +84,11 @@ export function Composer({
   const modelBtn = useRef<HTMLButtonElement>(null)
   const thinkingBtn = useRef<HTMLButtonElement>(null)
   const elevationBtn = useRef<HTMLButtonElement>(null)
+  const personaBtn = useRef<HTMLButtonElement>(null)
 
-  const [menu, setMenu] = useState<'model' | 'thinking' | 'elevation' | null>(null)
+  const [menu, setMenu] = useState<
+    'model' | 'thinking' | 'elevation' | 'persona' | null
+  >(null)
   const [height, setHeight] = useState(DEFAULT_HEIGHT)
   const [expanded, setExpanded] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -165,6 +176,7 @@ export function Composer({
   const thinkingLabel = thinkingSlider.labels[thinkingIndex] ?? 'Off'
   const elevationLabel =
     elevationLevels.find((level) => level.id === elevation)?.label ?? 'Standard'
+  const activePersona = personas.find((item) => item.id === activePersonaId)
 
   return (
     <div className="onion-composer-wrap">
@@ -295,6 +307,18 @@ export function Composer({
               <ChevronDown size={12} />
             </button>
 
+            <button
+              ref={personaBtn}
+              className="pill-btn"
+              data-active={menu === 'persona' || activePersonaId !== 'default'}
+              onClick={() => setMenu((current) => (current === 'persona' ? null : 'persona'))}
+              title="Persona (tone and sampling)"
+            >
+              <BrainCircuit size={13} />
+              <span>{activePersona?.label || 'Persona'}</span>
+              <ChevronDown size={12} />
+            </button>
+
             <span className="spacer" style={{ flex: 1 }} />
             <button
               className="pill-btn"
@@ -370,6 +394,33 @@ export function Composer({
       </ComposerPopover>
 
       <ComposerPopover
+        open={menu === 'persona'}
+        anchorRef={personaBtn}
+        onClose={() => setMenu(null)}
+        minWidth={300}
+      >
+        <div className="popover-section">
+          <span className="popover-section__label">Persona</span>
+          {personas.map((item) => (
+            <MenuItem
+              key={item.id}
+              label={`${item.label} · ${formatSampling(item)}`}
+              hint={item.description || undefined}
+              selected={item.id === activePersonaId}
+              onClick={() => {
+                onPersonaChange(item.id)
+                setMenu(null)
+              }}
+            />
+          ))}
+          <span className="popover-section__hint">
+            A persona changes tone and sampling only. Plan and Standard approval rules
+            still apply.
+          </span>
+        </div>
+      </ComposerPopover>
+
+      <ComposerPopover
         open={menu === 'elevation'}
         anchorRef={elevationBtn}
         onClose={() => setMenu(null)}
@@ -393,6 +444,14 @@ export function Composer({
       </ComposerPopover>
     </div>
   )
+}
+
+function formatSampling(persona: PersonaOption) {
+  const temperature = persona.sampling?.temperature
+  const topP = persona.sampling?.top_p
+  const trim = (value: number | undefined) =>
+    value === undefined ? '—' : Number(value.toFixed(2)).toString()
+  return `T${trim(temperature)} / P${trim(topP)}`
 }
 
 function shortPath(path: string) {

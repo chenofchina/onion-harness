@@ -22,11 +22,14 @@ from onion_harness.api.bus import EventBus
 from onion_harness.api.secrets import SecretError, cipher_from_store
 from onion_harness.api.store import AppStore, default_data_dir
 from onion_harness.core.events import EventType, OnionEvent, event
+from onion_harness.core.persona import PersonaLibrary, all_personas
 from onion_harness.core.primitives import Layer, Task, TaskKind
 from onion_harness.harness.errors import sanitize
 from onion_harness.harness.mcp_factory import McpStore, McpToolSpec
 from onion_harness.harness.mcp_runtime import McpRuntime
 from onion_harness.harness.presets import THINKING_LEVELS, all_presets
+from onion_harness.harness.review import ReviewConfig, ReviewGate
+from onion_harness.harness.provider import build_provider
 from onion_harness.harness.runtime import ModelConfig, OnionRuntime, build_model_config
 from onion_harness.ledger import ChangeLedger, ChangeRecord, LedgerError, LedgerStore
 from onion_harness.memory import MemoryBridge, MemoryStore
@@ -93,6 +96,14 @@ class OnionService:
         # if the file is copied off this machine.
         self.memory_store, self.memory = self._open_memory()
 
+        # Personas: built-ins plus any definition files in <data_dir>/personas.
+        self.personas = PersonaLibrary.load(self.data_dir / "personas")
+
+        # Automatic safety review. Built from settings, rebuilt when they change.
+        self.review_gate = ReviewGate(
+            self._review_config(), provider_factory=self._build_reviewer
+        )
+
         self.runtime = OnionRuntime(
             ledger=self.ledger,
             executors=self.executors,
@@ -103,6 +114,8 @@ class OnionService:
             emit=None,
             state_provider=lambda: self.ledger.state,
             memory=self.memory,
+            personas=self.personas,
+            reviewer=self.review_gate,
         )
         self.runtime.set_output_listener(self._on_process_output)
         self.runtime.set_approval_listener(self._on_approval_event)
@@ -112,6 +125,43 @@ class OnionService:
         self._active: Dict[str, asyncio.Task] = {}
         self._roundtables: Dict[str, Any] = {}
         self._lock = threading.RLock()
+
+        # Transcripts written before encryption was added are sealed on first
+        # start. Doing it here (rather than lazily on read) means the plaintext
+        # stops existing on disk as early as possible.
+        if self.store.events_encrypted:
+            try:
+                self.store.migrate_plaintext_events()
+            except Exception:  # noqa: BLE001 - never block startup
+                logger.debug("transcript migration failed", exc_info=True)
+
+    # -- review -------------------------------------------------------------
+    def _review_config(self) -> ReviewConfig:
+        return ReviewConfig.from_public(self.settings.get("auto_review"))
+
+    def _build_reviewer(self, config: ReviewConfig):
+        """Build the provider the review gate talks to.
+
+        Review uses its own cheap model, so the gate keeps working when the
+        conversation model is one that cannot be reached cheaply. It reuses the
+        saved key for that provider.
+        """
+        from onion_harness.harness.presets import preset_for
+
+        preset = preset_for(config.provider_id)
+        base_url = (self.settings.get("base_urls", {}) or {}).get(config.provider_id) or (
+            preset.base_url if preset else ""
+        )
+        api_key = self.store.vault.get(config.provider_id) or ""
+        wire_format = preset.format if preset else "openai"
+        return build_provider(
+            config.provider_id,
+            base_url,
+            api_key,
+            config.model,
+            wire_format=wire_format,
+            temperature=0.0,
+        )
 
     # -- lifecycle ----------------------------------------------------------
     def _open_memory(self):
@@ -286,6 +336,12 @@ class OnionService:
             "thinking_slider": self.modes()["thinking_slider"],
             "mcp_tools": self.mcp_tools(),
             "memory": self.memory_stats(),
+            "personas": self.personas.to_public(),
+            "persona_errors": list(self.personas.errors),
+            "active_persona": self.personas.get(
+                self.settings.get("active_persona")
+            ).to_dict(),
+            "auto_review": self._review_config().to_public(),
             "tasks": self.store.load_tasks(),
             "archived": self.archived_tasks(),
             "history": [r.to_dict() for r in self.ledger.list_history()],
@@ -339,7 +395,12 @@ class OnionService:
             "context_window",
             "mode",
             "elevation",
+            "active_persona",
+            # Kept so a per-conversation override survives a reload.
+            "temperature",
+            "top_p",
         }
+        review_changed = False
         for key, value in (patch or {}).items():
             if key == "api_key" and patch.get("provider_id"):
                 self.settings = self.store.set_provider_key(
@@ -358,6 +419,19 @@ class OnionService:
                     self.settings = self.store.set_provider_key(
                         self.settings, str(provider_id), str(api_key)
                     )
+            elif key == "auto_review" and isinstance(value, dict):
+                merged = {**self._review_config().to_public(), **value}
+                self.settings["auto_review"] = ReviewConfig.from_public(merged).to_public()
+                review_changed = True
+            elif key == "active_persona":
+                persona = self.personas.get(str(value))
+                if persona.id != str(value or "").strip().lower():
+                    raise ApiError(f"unknown persona: {value}", status=400)
+                self.settings["active_persona"] = persona.id
+            elif key in ("temperature", "top_p"):
+                parsed = _clamp_sampling(key, value)
+                if parsed is not _INVALID:
+                    self.settings[key] = parsed
             elif key in allowed:
                 clamped = _clamp_setting(key, value)
                 if clamped is not _INVALID:
@@ -369,6 +443,11 @@ class OnionService:
             self._apply_executor_config()
             self.runtime._sandbox = self.sandbox
             self.runtime._executors = self.executors
+
+        if review_changed:
+            # Hot-apply: the gate caches its provider, which may now point at a
+            # different model, so the config is pushed in rather than rebuilt.
+            self.review_gate.update_config(self._review_config())
 
         self.settings = self.store.save_settings(self.settings)
         return self.store.public_settings(self.settings)
@@ -665,6 +744,13 @@ class OnionService:
         # Context controls come from settings unless the caller overrides them.
         model_raw.setdefault("context_window", self.settings.get("context_window", 128_000))
         model_raw.setdefault("keep_recent", self.settings.get("keep_recent_messages", 10))
+        # Persona and its sampling. An explicit value on the request (the GUI
+        # sends one only when the user changed it) wins; otherwise the persona's.
+        model_raw.setdefault("persona_id", self.settings.get("active_persona", "default"))
+        if model_raw.get("temperature") is None:
+            model_raw["temperature"] = self.settings.get("temperature")
+        if model_raw.get("top_p") is None:
+            model_raw["top_p"] = self.settings.get("top_p")
         # A base URL typed in Advanced settings must reach the provider. The
         # preset only supplies a default, so without this an override was
         # silently ignored and every request went to the wrong host.
@@ -696,6 +782,11 @@ class OnionService:
             "provider": model.provider_id,
             "model": model.model,
             "mode": model.mode,
+            # Recorded so a follow-up keeps the persona and sampling it started
+            # with, and so the GUI can show what actually ran.
+            "persona_id": model.persona_id,
+            "temperature": model.temperature,
+            "top_p": model.top_p,
             "status": "queued",
             "created_at": time.time(),
             "updated_at": time.time(),
@@ -951,6 +1042,16 @@ class OnionService:
             "keep_recent",
             original.get("keep_recent") or self.settings.get("keep_recent_messages") or 10,
         )
+        # A follow-up keeps the persona it started with, so switching the global
+        # persona mid-conversation does not silently change an existing thread's
+        # tone or sampling.
+        model_payload.setdefault(
+            "persona_id", original.get("persona_id") or self.settings.get("active_persona", "default")
+        )
+        if model_payload.get("temperature") is None:
+            model_payload["temperature"] = original.get("temperature")
+        if model_payload.get("top_p") is None:
+            model_payload["top_p"] = original.get("top_p")
         if original.get("max_turns"):
             model_payload.setdefault("max_turns", original["max_turns"])
         overrides = self.settings.get("base_urls", {}) or {}
@@ -1322,6 +1423,23 @@ _SETTING_BOUNDS = {
     "keep_recent_messages": (2, 40),
     "max_turns": (1, 200),
 }
+
+
+def _clamp_sampling(key: str, value: Any) -> Any:
+    """Clamp a sampling override to the range the provider accepts.
+
+    ``None`` clears the override so the persona's value applies again; any other
+    non-number is rejected rather than silently dropped.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return _INVALID
+    if key == "temperature":
+        return max(0.0, min(2.0, number))
+    return max(0.0, min(1.0, number))
 
 
 def _clamp_setting(key: str, value: Any) -> Any:
