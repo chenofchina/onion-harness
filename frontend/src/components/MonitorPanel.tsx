@@ -35,9 +35,13 @@ export function MonitorPanel({
   const window = usage.context_window ?? 128000
 
   // Meta tool calls surface as change nodes in the graph, not as tool rows.
-  const toolCalls = events.filter(
-    (e) => e.type === 'tool-call' && !String(e.payload.name || '').startsWith('onion_'),
-  )
+  // Meta and memory calls are not executor activity: they are the agent
+  // adjusting Onion or its own notes, and they have their own surfaces.
+  const toolCalls = events.filter((e) => {
+    if (e.type !== 'tool-call') return false
+    const name = String(e.payload.name || '')
+    return !name.startsWith('onion_') && !name.startsWith('memory_')
+  })
   const results = new Map(events.filter((e) => e.type === 'tool-result').map((e) => [e.payload.call_id, e]))
   const recentTools = toolCalls.slice(-6).reverse()
 

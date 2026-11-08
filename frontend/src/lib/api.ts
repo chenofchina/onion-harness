@@ -411,6 +411,13 @@ export const api = {
     request<{ name: string; deleted: boolean }>(`/mcp/${name}`, { method: 'DELETE' }),
   mcpTools: () => request<{ tools: McpToolRecord[] }>('/mcp'),
   memory: () => request<{ stats: MemoryStats; memories: MemoryRecord[] }>('/memory'),
+  addMemory: (text: string, kind: string) =>
+    request<MemoryRecord>('/memory', { method: 'POST', body: JSON.stringify({ text, kind }) }),
+  updateMemory: (id: string, patch: { text: string; kind: string }) =>
+    request<MemoryRecord>(`/memory/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
   forgetMemory: (id: string) =>
     request<{ forgotten: string }>(`/memory/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   purgeMemory: () => request<{ purged: number }>('/memory', { method: 'DELETE' }),

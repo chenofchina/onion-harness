@@ -118,6 +118,64 @@ class MemoryStore:
             self._conn.commit()
         return cursor.rowcount > 0
 
+    def get(self, memory_id: str) -> Optional[Memory]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._from_row(row)
+        except Exception:  # noqa: BLE001 - unreadable row (wrong key)
+            return None
+
+    def update(
+        self,
+        memory_id: str,
+        *,
+        text: Optional[str] = None,
+        kind: Optional[str] = None,
+        weight: Optional[float] = None,
+    ) -> Optional[Memory]:
+        """Edit a memory in place.
+
+        The search index is rebuilt for the row, because editing without
+        re-indexing would leave the old wording findable and the new wording
+        invisible - the most confusing possible outcome of an edit.
+        """
+        existing = self.get(memory_id)
+        if existing is None:
+            return None
+
+        if text is not None:
+            cleaned = " ".join(str(text).split())
+            if not cleaned:
+                raise MemoryStoreError("memory text cannot be empty")
+            existing.text = cleaned
+        if kind is not None:
+            try:
+                existing.kind = MemoryKind(str(kind))
+            except ValueError:
+                raise MemoryStoreError(f"unknown memory kind: {kind}") from None
+        if weight is not None:
+            existing.weight = max(0.0, min(1.0, float(weight)))
+
+        payload = self._encode(existing.text)
+        with self._lock:
+            self._conn.execute(
+                "UPDATE memories SET kind = ?, ciphertext = ?, weight = ? WHERE id = ?",
+                (existing.kind.value, payload, existing.weight, memory_id),
+            )
+            self._conn.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
+            self._conn.execute(
+                "INSERT INTO memories_fts (memory_id, body) VALUES (?, ?)",
+                (memory_id, index_text(existing.text, self._hasher)),
+            )
+            self._conn.commit()
+        existing.stored = True
+        return existing
+
     def touch(self, memory_id: str) -> None:
         now = time.time()
         with self._lock:

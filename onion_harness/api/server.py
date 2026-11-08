@@ -92,6 +92,9 @@ def _make_handler(service: OnionService, static_dir: Optional[Path]):
         def do_DELETE(self) -> None:  # noqa: N802
             self._dispatch("DELETE")
 
+        def do_PATCH(self) -> None:  # noqa: N802
+            self._dispatch("PATCH")
+
         def _dispatch(self, method: str) -> None:
             try:
                 self._route(method)
@@ -114,7 +117,7 @@ def _make_handler(service: OnionService, static_dir: Optional[Path]):
             self._static(path)
 
         def _api(self, method: str, path: str, query: Dict[str, list]) -> None:
-            body = self._body() if method in {"POST", "DELETE"} else {}
+            body = self._body() if method in {"POST", "DELETE", "PATCH"} else {}
 
             if method == "GET" and path == "/api/bootstrap":
                 return self._json(service.bootstrap())
@@ -151,11 +154,15 @@ def _make_handler(service: OnionService, static_dir: Optional[Path]):
                 return self._json(
                     {"stats": service.memory_stats(), "memories": service.memory_list()}
                 )
+            if method == "POST" and path == "/api/memory":
+                return self._json(service.memory_add(body), status=201)
             if method == "DELETE" and path == "/api/memory":
                 return self._json(service.memory_purge())
             match = re.match(r"^/api/memory/([^/]+)$", path)
             if match and method == "DELETE":
                 return self._json(service.memory_forget(match.group(1)))
+            if match and method in ("PATCH", "POST"):
+                return self._json(service.memory_update(match.group(1), body))
             if method == "GET" and path == "/api/tasks/archived":
                 return self._json({"tasks": service.archived_tasks()})
             if method == "GET" and path == "/api/settings":

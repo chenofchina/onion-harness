@@ -101,6 +101,36 @@ class MemoryBridge:
         except Exception:  # noqa: BLE001
             return False
 
+    def update(self, memory_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
+        """Edit a memory from the GUI. Returns the stored record, or None."""
+        try:
+            memory = self.store.update(memory_id, **fields)
+        except MemoryStoreError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise MemoryStoreError(f"could not update memory: {exc}") from None
+        return memory.to_dict() if memory is not None else None
+
+    def add(
+        self, text: str, kind: str = "fact", weight: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Create a memory directly, for the GUI or the agent's own tool."""
+        from onion_harness.memory.model import new_memory
+
+        cleaned = " ".join(str(text or "").split())
+        if not cleaned:
+            raise MemoryStoreError("memory text cannot be empty")
+        memory = new_memory(
+            cleaned,
+            kind,
+            weight=0.8 if weight is None else weight,
+        )
+        try:
+            self.store.remember(memory)
+        except Exception as exc:  # noqa: BLE001
+            raise MemoryStoreError(f"could not store memory: {exc}") from None
+        return memory.to_dict()
+
     def purge(self) -> int:
         try:
             return self.store.purge()

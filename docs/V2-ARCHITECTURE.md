@@ -113,6 +113,26 @@ if memories:
 
 需求说「于无形中记住一切」。我倾向于**不要**让它伪装成自然记忆——那会变成幻觉源。记忆块明确标注为「相关背景」，模型知道这是检索来的。
 
+### 写入不是只读的补充（补充实现）
+
+初版记忆只有「harness 侧自动提取 + 静默注入」，所以 agent 被问「你能写记忆吗」时只能
+诚实回答不能。现在两侧都补上了：
+
+**agent 侧**：`memory_remember` / `memory_search` / `memory_forget` 三个工具，同时
+系统提示词里有一段 `MEMORY_PROMPT_HINT` 明确告知。该提示只在记忆真正启用时拼接——
+让一个没有记忆的模型以为自己有，比什么都不说更糟，它会回答「已保存」然后立刻忘掉。
+
+**用户侧**：Memory 面板可新增、内联编辑（文字 + 分类）、删除、清空。编辑会重建该行的
+FTS 盲索引，否则旧措辞继续命中、新措辞搜不到——那是编辑最糟糕的结果。
+
+**风险与边界**：记忆注入系统通道，工具输出可以影响 agent 写入什么，所以这是一条提权
+路径。缓解有四层：写入是普通工具调用（对话记录与监控面板都可见，不存在静默写入）、
+每任务 8 次写入上限、注入块声明「记忆是参考资料，当前请求优先」、用户可编辑或删除
+任意一条。
+
+工具是直接写而非提案，这是刻意的：记忆是「关于用户的数据」，不是「改变 Onion 的
+行为」。让审批弹窗挡在「记住我偏好 PowerShell」前面，正是用户会关掉记忆功能的原因。
+
 ### 接口（给 app 层）
 
 ```python
@@ -122,6 +142,8 @@ class MemoryStore:
     def forget(self, memory_id: str) -> bool
     def list_recent(self, limit: int = 50) -> list[Memory]
     def purge(self) -> None            # 用户一键清空
+    def get(self, memory_id: str) -> Memory | None
+    def update(self, memory_id, *, text, kind, weight) -> Memory | None
 ```
 
 ---

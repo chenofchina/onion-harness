@@ -319,6 +319,37 @@ function Shell() {
       .finally(() => setMemoryBusy(false))
   }, [loadMemories, toast])
 
+  const addMemory = useCallback(
+    (text: string, kind: string) => {
+      setMemoryBusy(true)
+      api
+        .addMemory(text, kind)
+        .then((record) => {
+          setMemories((prev) => [record, ...prev.filter((item) => item.id !== record.id)])
+          loadMemories()
+          toast('Note saved')
+        })
+        .catch((exc) => toast(exc instanceof Error ? exc.message : String(exc), 'error'))
+        .finally(() => setMemoryBusy(false))
+    },
+    [loadMemories, toast],
+  )
+
+  const updateMemory = useCallback(
+    (id: string, patch: { text: string; kind: string }) => {
+      setMemoryBusy(true)
+      api
+        .updateMemory(id, patch)
+        .then((record) => {
+          setMemories((prev) => prev.map((item) => (item.id === id ? record : item)))
+          loadMemories()
+        })
+        .catch((exc) => toast(exc instanceof Error ? exc.message : String(exc), 'error'))
+        .finally(() => setMemoryBusy(false))
+    },
+    [loadMemories, toast],
+  )
+
   const refreshBoot = useCallback(() => {
     api
       .bootstrap()
@@ -1258,6 +1289,8 @@ function Shell() {
           onClose={() => setDialog(null)}
           onForget={forgetMemory}
           onPurge={purgeMemory}
+          onAdd={addMemory}
+          onUpdate={updateMemory}
           busy={memoryBusy}
         />
       )}

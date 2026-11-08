@@ -29,6 +29,7 @@ from onion_harness.harness.adapters import EngineMessageTranslator, SessionFacto
 from onion_harness.harness.bridge import EngineLoop, require_engine
 from onion_harness.harness.context import ContextCompressor, estimate_tokens
 from onion_harness.harness.errors import BoundaryError, friendly_provider_error
+from onion_harness.harness.memory_tools import build_memory_tools
 from onion_harness.harness.meta import MetaTools
 from onion_harness.harness.modes import mode_spec
 from onion_harness.harness.provider import (
@@ -56,6 +57,23 @@ SYSTEM_PROMPT_TOOL_HINT = (
     "Use the onion_* meta tools to propose changes to Onion itself. Proposals are never "
     "applied automatically; a human confirms them. Never state that a change is live until "
     "the user reports it as applied.\n"
+)
+
+# Only appended when memory is actually enabled. Telling a model it has a memory it
+# does not have would be worse than saying nothing: it would answer "saved" and
+# forget immediately. This is also the direct answer to "can you write memory?" -
+# without it the agent correctly reported that it had no such capability.
+MEMORY_PROMPT_HINT = (
+    "\n## Long-term memory\n"
+    "You do have persistent memory across conversations, and you can write to it "
+    "yourself:\n"
+    "- memory_remember: save a note. Use it when the user states a preference, "
+    "corrects you, or tells you a lasting fact about their setup.\n"
+    "- memory_search: look something up when automatic recall did not surface it.\n"
+    "- memory_forget: delete a note the user says is wrong.\n"
+    "Notes are stored encrypted on this machine and are visible to the user, who can "
+    "edit or delete them. Write them as plain sentences. Do not save task-local "
+    "details, and never claim to have remembered something you did not actually save.\n"
 )
 
 
@@ -501,6 +519,11 @@ class OnionRuntime:
             )
         tools.extend(self._extra_tools)
         tools.extend(MetaTools(self._ledger, task.id, emit=None).tools())
+        # Memory tools let the agent save and correct notes itself instead of
+        # waiting for the end-of-task extractor. Absent when memory is disabled.
+        tools.extend(
+            build_memory_tools(self._memory, task.id, emit=self._make_memory_emitter(session))
+        )
         del mode_spec
         return tools
 
@@ -525,6 +548,37 @@ class OnionRuntime:
                     logger.debug("output listener failed", exc_info=True)
 
         return sink
+
+    def _make_memory_emitter(self, session: Optional[TaskSession]):
+        """Report an agent-written memory on the event stream.
+
+        Memory writes happen inside a tool call, where the generator is blocked,
+        so they go through the listener like approvals and review decisions. A
+        silent write would defeat the point of the transcript: the user has to be
+        able to see what the agent decided to remember.
+        """
+        if session is None:
+            return None
+
+        def emit(task_id: str, record: Dict[str, Any]) -> None:
+            event_obj = event(
+                EventType.MEMORY_LEARNED,
+                task_id,
+                source=Layer.HARNESS,
+                count=1,
+                kinds=[str(record.get("kind") or "")],
+                by="agent",
+                memory={"id": record.get("id"), "text": record.get("text")},
+            )
+            session.events.append(event_obj)
+            listener = self._approval_listener
+            if listener is not None:
+                try:
+                    listener(task_id, event_obj.to_dict())
+                except Exception:  # noqa: BLE001
+                    logger.debug("memory emitter failed", exc_info=True)
+
+        return emit
 
     approval_pending: Dict[str, Any] = field(default_factory=dict)
 
@@ -742,6 +796,8 @@ class OnionRuntime:
         hint = SYSTEM_PROMPT_TOOL_HINT.format(
             tools="\n".join(lines) or "- (no executors registered)"
         )
+        if self._memory is not None:
+            hint += MEMORY_PROMPT_HINT
         if skill_lines:
             hint += "\nMounted skills:\n" + "\n".join(skill_lines) + "\n"
         mcp_names = [tool.name for tool in self._extra_tools]

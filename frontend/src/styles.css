@@ -4518,3 +4518,45 @@ button {
   min-width: 34px;
   font-size: 0.8rem;
 }
+
+/* ---------------------------------------------------------- memory notes */
+
+/* A memory row mirrors a tool row but wraps: notes are sentences, not command
+   previews, and truncating them would hide exactly what the user came to
+   inspect. */
+.memory-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: var(--onion-radius-sm);
+  background: color-mix(in srgb, var(--md-sys-color-surface-container-high) 60%, transparent);
+  font-size: 0.78rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.memory-row[data-editing='true'] {
+  flex-direction: column;
+  background: color-mix(in srgb, var(--md-sys-color-surface-container-highest) 75%, transparent);
+}
+.memory-row__text {
+  flex: 1;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+  color: var(--md-sys-color-on-surface);
+}
+.memory-row select,
+.memory-row textarea {
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: var(--onion-radius-sm);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline) 55%, transparent);
+  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
+}
+.memory-row select:focus,
+.memory-row textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--md-sys-color-primary) 60%, transparent);
+  outline-offset: 1px;
+}

@@ -374,6 +374,44 @@ class OnionService:
             raise ApiError("memory not found", status=404)
         return {"forgotten": memory_id}
 
+    def memory_add(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a note by hand, so the store is not only machine-written."""
+        if self.memory is None:
+            raise ApiError("long-term memory is disabled", status=409)
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise ApiError("text is required")
+        try:
+            record = self.memory.add(
+                text,
+                kind=str(payload.get("kind") or "fact"),
+                weight=payload.get("weight"),
+            )
+        except Exception as exc:  # noqa: BLE001 - MemoryStoreError and friends
+            raise ApiError(str(exc)) from exc
+        return record
+
+    def memory_update(self, memory_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Edit a note's text, kind or weight. Re-indexed so search follows."""
+        if self.memory is None:
+            raise ApiError("long-term memory is disabled", status=409)
+        fields: Dict[str, Any] = {}
+        if "text" in payload:
+            fields["text"] = str(payload.get("text") or "")
+        if "kind" in payload:
+            fields["kind"] = str(payload.get("kind") or "")
+        if "weight" in payload and payload.get("weight") is not None:
+            fields["weight"] = payload.get("weight")
+        if not fields:
+            raise ApiError("nothing to update")
+        try:
+            record = self.memory.update(str(memory_id), **fields)
+        except Exception as exc:  # noqa: BLE001
+            raise ApiError(str(exc)) from exc
+        if record is None:
+            raise ApiError("memory not found", status=404)
+        return record
+
     def memory_purge(self) -> Dict[str, Any]:
         if self.memory is None:
             raise ApiError("long-term memory is disabled", status=409)

@@ -486,5 +486,67 @@ class ServiceSettingsTest(unittest.TestCase):
         self.assertLessEqual(updated["auto_review"]["timeout_seconds"], 60.0)
 
 
+class MemoryApiTest(unittest.TestCase):
+    """Memory must be editable from the GUI, not only machine-written."""
+
+    def setUp(self):
+        from onion_harness.api.service import OnionService
+
+        self.service = OnionService(data_dir=Path(tempfile.mkdtemp(prefix="onion-memapi-")))
+        self.service.start()
+
+    def tearDown(self):
+        self.service.stop()
+
+    def test_add_then_list(self):
+        record = self.service.memory_add({"text": "用户偏好使用 PowerShell", "kind": "preference"})
+        self.assertEqual(record["kind"], "preference")
+        listed = self.service.memory_list()
+        self.assertEqual(len(listed), 1)
+        self.assertIn("PowerShell", listed[0]["text"])
+
+    def test_add_requires_text(self):
+        from onion_harness.api.service import ApiError
+
+        with self.assertRaises(ApiError):
+            self.service.memory_add({"text": "   "})
+
+    def test_update_changes_the_note(self):
+        record = self.service.memory_add({"text": "first"})
+        updated = self.service.memory_update(record["id"], {"text": "second", "kind": "fact"})
+        self.assertEqual(updated["text"], "second")
+        self.assertEqual(self.service.memory_list()[0]["text"], "second")
+
+    def test_update_of_a_missing_id_is_404(self):
+        from onion_harness.api.service import ApiError
+
+        with self.assertRaises(ApiError) as ctx:
+            self.service.memory_update("mem_nope", {"text": "x"})
+        self.assertEqual(ctx.exception.status, 404)
+
+    def test_update_with_no_fields_is_rejected(self):
+        from onion_harness.api.service import ApiError
+
+        record = self.service.memory_add({"text": "x"})
+        with self.assertRaises(ApiError):
+            self.service.memory_update(record["id"], {})
+
+    def test_edit_survives_a_restart(self):
+        from onion_harness.api.service import OnionService
+
+        record = self.service.memory_add({"text": "before restart"})
+        self.service.memory_update(record["id"], {"text": "after restart"})
+        self.service.stop()
+
+        again = OnionService(data_dir=self.service.data_dir)
+        try:
+            self.assertEqual(again.memory_list()[0]["text"], "after restart")
+        finally:
+            again.stop()
+        # Re-open so tearDown has something to stop.
+        self.service = OnionService(data_dir=Path(tempfile.mkdtemp(prefix="onion-memapi2-")))
+        self.service.start()
+
+
 if __name__ == "__main__":
     unittest.main()
