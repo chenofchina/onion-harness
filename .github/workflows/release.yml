@@ -1,0 +1,130 @@
+name: Release
+
+# Tag-driven, not branch-driven: a release is a deliberate act. Pushing to main
+# runs CI; tagging a commit publishes a build.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0). Leave empty to build the current commit without publishing."
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows bundle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The GUI bundle is not committed (see .gitignore), so it must be built
+      # before PyInstaller collects the package - otherwise the app ships without
+      # a frontend and opens a blank window.
+      - name: Build the GUI bundle
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify the bundle landed in the package
+        run: |
+          if (-not (Test-Path "onion_harness/app/static/index.html")) {
+            throw "GUI bundle missing: the app would ship with no interface"
+          }
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pyinstaller
+
+      # The layer guard and the tests run before anything is packaged: a release
+      # that skips them can ship a build that CI would have rejected.
+      - name: Architecture guard
+        run: python scripts/check_layers.py
+
+      - name: Tests
+        run: pytest tests/ -q
+
+      - name: Build the executable
+        run: python -m PyInstaller packaging/OnionHarness.spec --noconfirm
+
+      # A release artifact must actually be able to start and answer. Checking the
+      # presence of files is not the same claim as "it runs".
+      - name: Smoke test the packaged app
+        shell: powershell
+        run: |
+          $exe = "dist\OnionHarness\OnionHarness.exe"
+          if (-not (Test-Path $exe)) { throw "build produced no executable" }
+          $data = Join-Path $env:RUNNER_TEMP "onion-release-data"
+          $proc = Start-Process -FilePath $exe -PassThru -NoNewWindow `
+            -ArgumentList "--no-window", "--port", "8999", "--data-dir", $data
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $r = Invoke-WebRequest -Uri "http://127.0.0.1:8999/api/bootstrap" -TimeoutSec 3 -UseBasicParsing
+                if ($r.StatusCode -eq 200) { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) { throw "packaged app did not answer on /api/bootstrap" }
+            $boot = $r.Content | ConvertFrom-Json
+            if ($boot.providers.Count -lt 1) { throw "no providers in bootstrap payload" }
+            Write-Host ("smoke ok: {0} providers, personas {1}" -f $boot.providers.Count, $boot.personas.Count)
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: Package the release zip
+        shell: powershell
+        run: |
+          Compress-Archive -Path "dist\OnionHarness\*" -DestinationPath "OnionHarness-win64.zip" -Force
+          $size = (Get-Item "OnionHarness-win64.zip").Length
+          Write-Host ("zip size: {0:N1} MB" -f ($size / 1MB))
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OnionHarness-win64
+          path: OnionHarness-win64.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: OnionHarness-win64
+
+      # `contents: write` on the job plus the default token is all a release needs;
+      # no PAT has to be stored as a secret.
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: OnionHarness-win64.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            Windows x64 build of Onion Harness.
+
+            Unzip and run `OnionHarness.exe`. On first launch it will ask for a
+            provider API key, which is stored in the Windows credential manager
+            rather than a file.
+
+            This build is unsigned, so Windows SmartScreen may warn on first run.
