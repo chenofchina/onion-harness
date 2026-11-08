@@ -208,6 +208,11 @@ def _make_handler(service: OnionService, static_dir: Optional[Path]):
             match = re.match(r"^/api/tasks/([^/]+)/context$", path)
             if match and method == "POST":
                 return self._json(service.update_task_context(match.group(1), body))
+            match = re.match(r"^/api/tasks/([^/]+)/ui-action$", path)
+            if match and method == "POST":
+                return self._json(
+                    service.ui_action(match.group(1), str(body.get("action_id") or ""))
+                )
             match = re.match(r"^/api/tasks/([^/]+)/history$", path)
             if match and method == "GET":
                 return self._json({"history": service.task_history(match.group(1))})

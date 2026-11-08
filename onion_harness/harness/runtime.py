@@ -29,6 +29,7 @@ from onion_harness.harness.adapters import EngineMessageTranslator, SessionFacto
 from onion_harness.harness.bridge import EngineLoop, require_engine
 from onion_harness.harness.context import ContextCompressor, estimate_tokens
 from onion_harness.harness.errors import BoundaryError, friendly_provider_error
+from onion_harness.harness.contract import compose_capability_contract
 from onion_harness.harness.memory_tools import build_memory_tools
 from onion_harness.harness.meta import MetaTools
 from onion_harness.harness.modes import mode_spec
@@ -171,6 +172,7 @@ class OnionRuntime:
         memory=None,
         personas=None,
         reviewer=None,
+        planner_enabled: bool = True,
     ) -> None:
         self._ledger = ledger
         self._executors = executors
@@ -190,6 +192,10 @@ class OnionRuntime:
         # sandbox. Both are optional so a bare runtime still works.
         self._personas = personas
         self._review_gate = reviewer
+        # The planner itself is built per task (it needs that task's model), so this
+        # flag only records whether planning is available at all - the prompt is
+        # written from it.
+        self._planner_enabled = planner_enabled
         # Set by the API layer to stream raw process output to the sidecar.
         self._output_listener = None
         # Set by the API layer to forward out-of-band approval events.
@@ -337,8 +343,75 @@ class OnionRuntime:
             logger.debug("memory recall failed", exc_info=True)
             return []
 
+    async def _rag_context(self, question: str, model: "ModelConfig"):
+        """Run RAG++ over long-term memory. Returns ``(prompt_block, result)``.
+
+        Both model hooks are backed by the task's own provider, so retrieval costs
+        at most two extra cheap calls. Any failure returns an empty block: recall
+        quality must never be able to fail a task.
+        """
+        if self._memory is None:
+            return "", None
+        # Nothing stored means nothing to retrieve. Two extra model calls to search
+        # an empty store would be pure cost, and in a fresh install they were being
+        # made on every single turn.
+        try:
+            if self._memory.store.count() == 0:
+                return "", None
+        except Exception:  # noqa: BLE001 - a broken store falls through to normal path
+            pass
+        from onion_harness.harness.rag import RagPipeline, build_rerank_prompt, build_rewrite_prompt
+
+        async def rewrite(text: str) -> Any:
+            return await self._ask_model(model, build_rewrite_prompt(text), max_tokens=300)
+
+        async def rerank(text: str, passages: List[str]) -> Any:
+            return await self._ask_model(
+                model, build_rerank_prompt(text, passages), max_tokens=200
+            )
+
+        pipeline = RagPipeline(
+            recall=lambda query, limit: self._memory.store.recall(query, limit=limit),
+            rewrite=rewrite,
+            rerank=rerank,
+        )
+        try:
+            result = await pipeline.retrieve(question)
+        except Exception:  # noqa: BLE001 - retrieval must not break a run
+            logger.debug("rag pipeline failed", exc_info=True)
+            return "", None
+        if result is None or result.empty:
+            return "", result
+        return result.compose_prompt(), result
+
+    async def _ask_model(self, model: "ModelConfig", prompt: str, *, max_tokens: int = 300) -> str:
+        """One side-channel model call for retrieval helpers."""
+        provider = build_provider(
+            model.provider_id,
+            model.base_url,
+            model.api_key,
+            model.model,
+            wire_format=model.wire_format,
+            temperature=0.0,
+            top_p=1.0,
+            thinking_budget=0,
+        )
+        from onion_harness.harness.bridge import EngineMessage
+
+        try:
+            response = await provider.chat_completion(
+                [EngineMessage.user(text=prompt)], tools=None, temperature=0.0
+            )
+            return str(getattr(response, "text", "") or "")
+        finally:
+            closer = getattr(provider, "aclose", None)
+            if closer is not None:
+                try:
+                    await closer()
+                except Exception:  # noqa: BLE001
+                    pass
+
     def _resolve_persona(self, persona_id: Optional[str]):
-        """Look up the active persona, honouring definitions dropped on disk."""
         try:
             if self._personas is not None:
                 return self._personas.get(persona_id)
@@ -376,6 +449,25 @@ class OnionRuntime:
         state = self._state_provider() or {}
         recalled = self._recall_for(session)
         memory_block = self._memory.prompt_for(recalled) if recalled else ""
+        # RAG++: rewrite the question into extra probes and rerank what comes back,
+        # so recall is not limited to the user's exact wording. It degrades to the
+        # plain recall above whenever no model is available, so this can only
+        # improve recall, never remove it.
+        rag_block, rag_result = await self._rag_context(task.prompt, model)
+        if rag_block:
+            memory_block = f"{memory_block}\n\n{rag_block}".strip() if memory_block else rag_block
+            yield self._emit_into(
+                session,
+                event(
+                    EventType.RAG_RETRIEVED,
+                    task.id,
+                    queries=rag_result.queries,
+                    rewritten=rag_result.rewritten,
+                    reranked=rag_result.reranked,
+                    degraded=rag_result.degraded,
+                    snippets=[snippet.to_dict() for snippet in rag_result.snippets],
+                ),
+            )
         # The persona is resolved here, not at construction, so switching it
         # takes effect on the next task without restarting the runtime.
         persona = self._resolve_persona(model.persona_id)
@@ -537,6 +629,13 @@ class OnionRuntime:
         tools.extend(
             build_memory_tools(self._memory, task.id, emit=self._make_memory_emitter(session))
         )
+        # Planning: the model asks for a DAG, gets it validated, and the result is
+        # handed back as text it can then execute step by step. The planner is not
+        # allowed to run the tools itself - approval, review and the sandbox all
+        # apply to the calls the model makes, and a plan that executed directly
+        # would bypass them.
+        if self._planner_enabled:
+            tools.append(self._make_planner_tool(model, session))
         del mode_spec
         return tools
 
@@ -594,6 +693,133 @@ class OnionRuntime:
         return emit
 
     approval_pending: Dict[str, Any] = field(default_factory=dict)
+
+    def _make_planner_tool(
+        self, model: Optional["ModelConfig"], session: Optional[TaskSession]
+    ) -> OnionTool:
+        """A tool that validates a DAG the model proposed.
+
+        It **validates and returns** the plan; it does not execute it. Executing
+        here would mean tool calls that never passed through approval, the safety
+        reviewer, or the mode gate - the plan would become a way around every
+        guard in the system. The model gets the checked plan back and then makes
+        the real calls, one at a time, on the ordinary path.
+        """
+        available = self._all_tool_names()
+
+        def handler(args: Dict[str, Any]) -> Dict[str, Any]:
+            from onion_harness.harness.planner import PlanError, parse_plan
+
+            raw = args.get("plan")
+            if raw is None:
+                # Accept the plan inline as the whole argument object, which is what
+                # a model often produces when the schema is loose.
+                raw = args
+            try:
+                plan = parse_plan(raw)
+            except PlanError as exc:
+                return {"ok": False, "error": str(exc)}
+
+            unknown = sorted({node.tool for node in plan.nodes if node.tool not in available})
+            if unknown:
+                return {
+                    "ok": False,
+                    "error": (
+                        "the plan uses tools that do not exist: "
+                        + ", ".join(unknown)
+                        + ". Available tools: "
+                        + ", ".join(sorted(available))
+                    ),
+                }
+
+            if session is not None:
+                self._record_plan(session, plan)
+            return {
+                "ok": True,
+                "goal": plan.goal,
+                "steps": [node.to_dict() for node in plan.nodes],
+                "note": (
+                    "The plan is valid. Execute the steps in this order by calling "
+                    "each tool yourself. Respect every `when` condition and skip a "
+                    "step whose condition is false."
+                ),
+            }
+
+        return OnionTool(
+            name="plan_task",
+            description=(
+                "Validate a multi-step plan before executing it. Supply a JSON DAG of "
+                "steps (id, tool, args, depends_on, optional when). Returns the steps "
+                "in dependency order, or an error explaining why the plan is unusable. "
+                "This only validates - you still make the tool calls yourself. Use it "
+                "for requests that need several dependent steps; do not use it for a "
+                "single call."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string"},
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "tool": {"type": "string"},
+                                "args": {"type": "object"},
+                                "depends_on": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "when": {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "required": ["id", "tool"],
+                        },
+                    },
+                },
+                "required": ["steps"],
+                "additionalProperties": False,
+            },
+            handler=handler,
+            metadata={"kind": "planner", "label": "Plan task", "icon": "graph"},
+        )
+
+    def _all_tool_names(self) -> List[str]:
+        """Every tool name the model could legitimately plan with.
+
+        Defensive on purpose: this runs while the tool list is being assembled, so
+        an exception here would fail the whole task before it started. An odd
+        executor contributes no name rather than aborting the run.
+        """
+        names: List[str] = []
+        for executor in self._executors.all():
+            name = getattr(executor, "tool_name", None)
+            if isinstance(name, str) and name:
+                names.append(name)
+        names.extend(tool.name for tool in self._extra_tools)
+        names.extend(["onion_register_executor", "onion_register_model_provider",
+                      "onion_update_system_prompt", "onion_update_ui_panel",
+                      "onion_update_skill_registry"])
+        names.extend(["memory_remember", "memory_search", "memory_forget"])
+        return names
+
+    def _record_plan(self, session: TaskSession, plan) -> None:
+        """Publish the validated plan so the GUI can show the graph."""
+        event_obj = event(
+            EventType.PLAN_PROPOSED,
+            session.task.id,
+            source=Layer.HARNESS,
+            goal=plan.goal,
+            steps=[node.to_dict() for node in plan.nodes],
+        )
+        session.events.append(event_obj)
+        listener = self._approval_listener
+        if listener is not None:
+            try:
+                listener(session.task.id, event_obj.to_dict())
+            except Exception:  # noqa: BLE001
+                logger.debug("plan listener failed", exc_info=True)
 
     def _make_executor_handler(self, executor, ctx: Context, model: Optional["ModelConfig"] = None,
                                session: Optional[TaskSession] = None):
@@ -813,9 +1039,10 @@ class OnionRuntime:
             hint += MEMORY_PROMPT_HINT
         if skill_lines:
             hint += "\nMounted skills:\n" + "\n".join(skill_lines) + "\n"
-        # Web search tools are injected alongside MCP tools, but they are not MCP tools
-# and the model should not be told they are. Listing them separately also gives a
-# place to state the one rule that keeps a search from becoming a hallucination.
+        # Web search tools are injected alongside MCP tools, but they are not MCP
+        # tools and the model should not be told they are. Listing them separately
+        # also gives a place to state the rule that keeps a search from becoming a
+        # hallucination.
         web_search = [
             tool for tool in self._extra_tools
             if (tool.metadata or {}).get("kind") == "web-search"
@@ -829,6 +1056,15 @@ class OnionRuntime:
             hint += "\nMCP tools available: " + ", ".join(mcp_names) + "\n"
         if web_search:
             hint += SEARCH_PROMPT_HINT
+        # The capability contract: what the model may emit, how it plans, and how it
+        # behaves on failure. Sectioned by what is actually wired up, so it is never
+        # told about a capability it does not have.
+        hint += "\n" + compose_capability_contract(
+            ui=True,
+            planner=self._planner_enabled,
+            rag=self._memory is not None,
+            execution=True,
+        )
         composed = (base + hint).strip()
         composed = compose_persona_overlay(persona, composed)
         if memory_block:

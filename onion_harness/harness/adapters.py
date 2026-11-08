@@ -153,6 +153,10 @@ class EngineMessageTranslator:
                 )
 
             if text:
+                # One reply may mix prose and interactive blocks. The assistant
+                # event keeps the full text for history, and any <ui> blocks are
+                # also emitted as structured events so the GUI renders them from
+                # validated data instead of parsing markdown itself.
                 events.append(
                     event(
                         EventType.ASSISTANT,
@@ -162,6 +166,16 @@ class EngineMessageTranslator:
                         step=self._turn,
                     )
                 )
+                for block in self._ui_blocks(text):
+                    events.append(
+                        event(
+                            EventType.UI_BLOCK,
+                            self._task_id,
+                            0,
+                            step=self._turn,
+                            **block,
+                        )
+                    )
 
             for call in getattr(message, "tool_calls", []) or []:
                 call_id = getattr(call, "id", "") or f"call-{self._seq}-{len(events)}"
@@ -230,6 +244,25 @@ class EngineMessageTranslator:
         return events
 
     # -- helpers ------------------------------------------------------------
+    @staticmethod
+    def _ui_blocks(text: str) -> List[Dict[str, Any]]:
+        """Extract validated ``<ui>`` blocks from a reply.
+
+        Parsing failure is not fatal: the assistant text still renders as Markdown,
+        so a malformed block costs the widget, never the message.
+        """
+        try:
+            from onion_harness.core.hybrid import render
+
+            rendered = render(text)
+        except Exception:  # noqa: BLE001 - never lose a message over markup
+            return []
+        return [
+            segment.to_dict()
+            for segment in rendered.segments
+            if segment.kind in ("ui", "ui-error")
+        ]
+
     def _tool_result_event(self, result: Any) -> OnionEvent:
         call_id = getattr(result, "tool_use_id", "") or ""
         pending = self._pending_tool_calls.pop(call_id, {}) or {}

@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   Sparkles,
   SquareTerminal,
+  Workflow,
   Undo2,
   Wrench,
   X,
@@ -17,6 +18,7 @@ import {
 import type { ChangeRecord, OnionEvent, Revision } from '../lib/api'
 import { Markdown } from './Markdown'
 import { ApprovalCard } from './TaskActions'
+import { UIRenderer } from './UIRenderer'
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -692,6 +694,7 @@ export type EventActions = {
   onReject: (id: string) => void
   onRevert: (version: number) => void
   onResolveApproval?: (approvalId: string, approved: boolean) => void
+  onUIAction?: (actionId: string) => void
   onOpenSettings?: () => void
   busyChangeId?: string | null
 }
@@ -732,6 +735,20 @@ export function renderEvent(
         />
       )
     }
+    case 'ui-block': {
+      // A ui-error segment has no nodes; show the reason instead of a blank card.
+      if (p.kind === 'ui-error' || (!p.nodes && p.error)) {
+        return (
+          <div className="card ui-block" data-error="true">
+            <span className="text-muted">This UI block could not be rendered: {p.error}</span>
+          </div>
+        )
+      }
+      if (!Array.isArray(p.nodes) || p.nodes.length === 0) return null
+      return <UIRenderer nodes={p.nodes} onAction={(id) => actions.onUIAction?.(id)} />
+    }
+    case 'plan-proposed':
+      return <PlanCard goal={p.goal} steps={p.steps || []} />
     case 'review-decided':
       return (
         <ReviewCard
@@ -791,6 +808,61 @@ export function renderEvent(
     default:
       return null
   }
+}
+
+/**
+ * A validated DAG the agent intends to follow.
+ *
+ * Shown as an ordered list rather than a graph drawing: the interesting facts are
+ * the order, what each step waits on, and which steps are conditional. A node-link
+ * diagram hides all three behind layout.
+ */
+export function PlanCard({
+  goal,
+  steps,
+}: {
+  goal?: string
+  steps: {
+    id: string
+    tool: string
+    depends_on?: string[]
+    when?: string
+    description?: string
+  }[]
+}) {
+  return (
+    <div className="card card-plan">
+      <div className="card-plan__head">
+        <span className="card__header-icon">
+          <Workflow size={16} />
+        </span>
+        <span className="card-plan__title">Plan</span>
+        {steps.length > 0 && <span className="impact-chip">{steps.length} steps</span>}
+      </div>
+      {goal && <div className="card-plan__goal">{goal}</div>}
+      <ol className="card-plan__steps">
+        {steps.map((step) => (
+          <li key={step.id} className="card-plan__step">
+            <span className="card-plan__id">{step.id}</span>
+            <span className="card-plan__tool">{step.tool}</span>
+            {step.depends_on && step.depends_on.length > 0 && (
+              <span className="card-plan__dep" title="Runs after">
+                after {step.depends_on.join(', ')}
+              </span>
+            )}
+            {step.when && (
+              <span className="card-plan__when" title="Conditional">
+                if {step.when}
+              </span>
+            )}
+            {step.description && (
+              <span className="card-plan__desc">{step.description}</span>
+            )}
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
 }
 
 export function ToolMonitorIcon({ executor }: { executor?: string }) {

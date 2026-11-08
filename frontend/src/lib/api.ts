@@ -259,6 +259,15 @@ export type Settings = {
   web_search?: Partial<WebSearchConfig>
 }
 
+export type UINodeSpec = {
+  tag: string
+  attrs?: Record<string, string>
+  text?: string
+  children?: UINodeSpec[]
+}
+
+export type UIActionSpec = { id: string; label: string }
+
 export type PersonaOption = {
   id: string
   label: string
@@ -444,6 +453,11 @@ export const api = {
     request<{ seat: Record<string, unknown> }>(`/roundtable/${taskId}/seats`, {
       method: 'POST',
       body: JSON.stringify(seat),
+    }),
+  uiAction: (taskId: string, actionId: string) =>
+    request<TaskRecord>(`/tasks/${taskId}/ui-action`, {
+      method: 'POST',
+      body: JSON.stringify({ action_id: actionId }),
     }),
   continueTask: (taskId: string, payload: Record<string, unknown>) =>
     request<TaskRecord>(`/tasks/${taskId}/continue`, {

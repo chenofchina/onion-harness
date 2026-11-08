@@ -24,6 +24,7 @@ from typing import Dict, Optional
 
 from onion_harness.core.primitives import Context, Result
 from onion_harness.sandbox.api import PreparedCommand
+from onion_harness.sandbox.safe_exec import spawn_kwargs
 
 _WINDOWS = os.name == "nt"
 
@@ -42,11 +43,10 @@ class ProcessLauncher:
     # -- normal path ---------------------------------------------------------
     async def _run_plain(self, prepared: PreparedCommand, ctx: Context) -> Result:
         started = time.perf_counter()
-        kwargs = {}
-        if _WINDOWS:
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            kwargs["start_new_session"] = True
+        # CREATE_NO_WINDOW is the fix for the black console that used to flash on
+        # every tool call: setting only CREATE_NEW_PROCESS_GROUP lets the child
+        # inherit a console window, which also steals focus from the GUI.
+        kwargs = spawn_kwargs()
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -204,6 +204,8 @@ class ProcessLauncher:
             return
         try:
             if _WINDOWS:
+                # taskkill is a console program too; without these flags killing a
+                # timed-out task produces the very window flash this is avoiding.
                 killer = await asyncio.create_subprocess_exec(
                     "taskkill",
                     "/F",
@@ -212,6 +214,7 @@ class ProcessLauncher:
                     str(proc.pid),
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
+                    **spawn_kwargs(new_group=False),
                 )
                 await killer.wait()
             else:

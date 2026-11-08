@@ -657,6 +657,27 @@ function Shell() {
     [toast],
   )
 
+  const sendUIAction = useCallback(
+    async (actionId: string) => {
+      if (!activeTaskId) return
+      try {
+        const result = await api.uiAction(activeTaskId, actionId)
+        // The action arrives as a normal user turn, so reuse the same rendering
+        // path as a typed message rather than inventing a second one.
+        const userEvent = (result as TaskRecord & { user_event?: OnionEvent }).user_event
+        if (userEvent && !eventKeys.current.has(userEvent.id)) {
+          eventKeys.current.add(userEvent.id)
+          setEvents((prev) => [...prev, userEvent])
+        }
+        setRunningTaskId(result.id)
+        refreshBoot()
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error), 'error')
+      }
+    },
+    [activeTaskId, toast, refreshBoot],
+  )
+
   const resolveApproval = useCallback(
     async (approvalId: string, approved: boolean) => {
       if (!activeTaskId) return
@@ -935,6 +956,7 @@ function Shell() {
       onReject: rejectChange,
       onRevert: revertVersion,
       onResolveApproval: resolveApproval,
+      onUIAction: sendUIAction,
       onOpenSettings: () => setDialog('settings'),
       busyChangeId,
     }),

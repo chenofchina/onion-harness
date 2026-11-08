@@ -4560,3 +4560,132 @@ button {
   outline: 2px solid color-mix(in srgb, var(--md-sys-color-primary) 60%, transparent);
   outline-offset: 1px;
 }
+
+/* ------------------------------------------------------- hybrid ui blocks */
+
+/* A <ui> block is model-authored layout, not application chrome. It gets a
+   distinguishable surface so the user can tell "the agent drew this" from the
+   harness's own cards, and its contents are constrained to the same type scale
+   so a block cannot visually impersonate system UI. */
+.card.ui-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 5%, transparent);
+}
+.card.ui-block[data-error='true'] {
+  border-color: color-mix(in srgb, var(--md-sys-color-error) 40%, transparent);
+  background: color-mix(in srgb, var(--md-sys-color-error) 6%, transparent);
+}
+
+.ui-btn {
+  align-self: flex-start;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 99px;
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent);
+  color: var(--md-sys-color-primary);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.ui-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 24%, transparent);
+}
+.ui-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ui-input {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 6px 10px;
+  border-radius: var(--onion-radius-sm);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline) 45%, transparent);
+  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
+}
+.ui-block p,
+.ui-block li { font-size: 0.85rem; line-height: 1.5; margin: 0; }
+.ui-block ul,
+.ui-block ol { margin: 0; padding-left: 1.2em; }
+.ui-block table { border-collapse: collapse; font-size: 0.8rem; }
+.ui-block th,
+.ui-block td {
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 60%, transparent);
+  padding: 4px 8px;
+  text-align: left;
+}
+.ui-block h1,
+.ui-block h2,
+.ui-block h3,
+.ui-block h4 { margin: 0; font-size: 0.95rem; }
+.ui-block code,
+.ui-block pre { font-family: var(--onion-mono); font-size: 0.76rem; }
+
+/* --------------------------------------------------------------- plan card */
+
+.card-plan {
+  padding: 12px 14px;
+}
+.card-plan__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.card-plan__title {
+  font-weight: 650;
+  font-size: 0.86rem;
+  color: var(--md-sys-color-on-surface);
+}
+.card-plan__goal {
+  font-size: 0.8rem;
+  color: var(--md-sys-color-on-surface-variant);
+  margin-bottom: 10px;
+}
+.card-plan__steps {
+  margin: 0;
+  padding-left: 1.15em;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.card-plan__step {
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.card-plan__id {
+  font-family: var(--onion-mono);
+  font-size: 0.74rem;
+  font-weight: 650;
+  color: var(--md-sys-color-primary);
+  margin-right: 6px;
+}
+.card-plan__tool {
+  font-family: var(--onion-mono);
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--md-sys-color-surface-container-highest) 80%, transparent);
+  margin-right: 6px;
+}
+.card-plan__dep,
+.card-plan__when {
+  font-size: 0.7rem;
+  margin-right: 6px;
+  color: var(--md-sys-color-outline);
+}
+.card-plan__when {
+  color: var(--md-sys-color-tertiary);
+}
+.card-plan__desc {
+  display: block;
+  color: var(--md-sys-color-on-surface-variant);
+  opacity: 0.9;
+}

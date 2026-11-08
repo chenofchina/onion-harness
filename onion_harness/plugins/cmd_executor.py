@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List
 
 from onion_harness.plugins.base import BaseExecutor
+from onion_harness.sandbox.safe_exec import cmd_argv
 
 
 class CmdExecutor(BaseExecutor):
@@ -31,7 +32,7 @@ class CmdExecutor(BaseExecutor):
     def build_command(
         self, script_path: Path, timeout_seconds: float, cwd: Path
     ) -> List[str]:
-        return ["cmd.exe", "/d", "/c", str(script_path)]
+        return cmd_argv(str(script_path))
 
     @staticmethod
     def available() -> bool:

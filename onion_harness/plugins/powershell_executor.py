@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List
 
 from onion_harness.plugins.base import BaseExecutor
+from onion_harness.sandbox.safe_exec import powershell_argv
 
 
 class PowerShellExecutor(BaseExecutor):
@@ -36,16 +37,10 @@ class PowerShellExecutor(BaseExecutor):
     def build_command(
         self, script_path: Path, timeout_seconds: float, cwd: Path
     ) -> List[str]:
-        return [
-            "powershell.exe",
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script_path),
-        ]
+        # -NonInteractive plus -WindowStyle Hidden come from the shared argv so
+        # this and the sandbox launcher can never disagree about the flags that
+        # keep a console from appearing or blocking on a prompt.
+        return powershell_argv(str(script_path))
 
     def preview(self, code: str, limit: int = 160) -> str:
         return f"powershell: {' '.join(code.split())[:limit]}"

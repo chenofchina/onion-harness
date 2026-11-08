@@ -359,6 +359,60 @@ Tool call
 
 ---
 
+## 四点二、Harness 侧 AGI 形态（补充实现）
+
+### 一、混合渲染
+
+`core/hybrid.py`（第 0 层，纯 stdlib）。`<ui>` 块先被 Python 解析成节点树，只保留
+白名单标签/属性，再由前端用 React 构树。**任何字符串都不会进入 `innerHTML`**，所以
+「模型写了 script 标签」不是漏洞，而是校验失败。
+
+交互只有一种形式：`onclick="sendAction('id')"`，它不是 JS，而是声明式指令。点击经
+`POST /api/tasks/{id}/ui-action` 变回一条普通用户消息（`[ui-action] id`）。这样审批、
+安全审查、模式关卡全部照常生效——按钮不是绕过护栏的侧门。
+
+被拒绝的标签**平铺丢弃**，不能当容器。这是实现时踩到的真问题：早期版本把被拒标签压入
+栈，导致它后面的合法 `<button>` 嵌套在其中一起消失。测试
+`test_rejected_tag_does_not_swallow_later_content` 锁死这条。
+
+### 二、DAG 规划器
+
+`harness/planner.py`。校验先于执行：环、自依赖、不存在的步骤、不存在的工具，全部在
+任何副作用发生前拒绝。条件语法固定（`step`、`==`、`contains`、`=~`），**没有表达式
+求值器**，计划无法执行文本。
+
+`plan_task` 工具**只校验并返回**，不执行。这一点是刻意的：若规划器直接执行工具，那些
+调用就跳过了审批、审查与沙箱，规划器会成为所有护栏的后门。
+
+执行语义：某步失败只跳过它的下游，独立分支继续跑——一次失败的查询不该取消整件事。
+
+### 三、RAG++
+
+`harness/rag.py`。重写 → 混合召回 → 重排 → 编号引用。原始查询永远排第一，重写只增不减。
+零分片段被丢弃而非塞入上下文。两个模型步骤都可失败降级为词面检索，降级原因写入
+`degraded` 字段并在事件里暴露。
+
+存储为空时**不调用模型**——早期版本在全新安装上每轮都发两次无意义的调用，这是测试
+发现的浪费，也让连续对话的断言失败。
+
+### 四、静默执行（红线）
+
+`sandbox/safe_exec.py`。原实现的根因很具体：`launcher.py` 只设了
+`CREATE_NEW_PROCESS_GROUP`，**没有** `CREATE_NO_WINDOW`，子进程因此继承控制台窗口并抢焦点。
+
+现在 `spawn_kwargs()` 是唯一出口，同时给 `CREATE_NO_WINDOW` 和 `STARTUPINFO(SW_HIDE)`；
+PowerShell 追加 `-NoProfile -NonInteractive -WindowStyle Hidden`。`taskkill` 也走同一套
+标志，否则超时清理本身会闪窗。测试断言的是"标志被传下去了"——黑框没出现是无法观测的，
+但标志是。
+
+### 五、能力契约
+
+`harness/contract.py`。分段注入，按实际接线情况裁剪：没接规划器就不讲规划，搜索关掉就
+不提搜索。示例里的工具名用尖括号占位（`<a tool you actually have>`），不写具体名字——
+早期版本硬写了 `web_search`，导致关闭搜索后提示词仍在暗示模型可以搜索。
+
+---
+
 ## 四点五、联网搜索（补充实现）
 
 `plugins/web_search.py`，第 2 层（plugins 只依赖 core/sandbox），由 api 层注入

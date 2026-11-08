@@ -447,6 +447,29 @@ class OnionService:
             raise ApiError("long-term memory is disabled", status=409)
         return {"purged": self.memory.purge()}
 
+    # -- hybrid UI actions --------------------------------------------------
+    def ui_action(self, task_id: str, action_id: str) -> Dict[str, Any]:
+        """Feed a click on a rendered ``<ui>`` button back to the agent.
+
+        The click becomes an ordinary user turn. That is deliberate: routing it
+        through the normal path means the resulting work still goes through
+        approval, the safety reviewer and the mode gate. A dedicated action channel
+        would have been a side door around all three.
+        """
+        action = str(action_id or "").strip()
+        if not action:
+            raise ApiError("action_id is required")
+        if not self._valid_action_id(action):
+            raise ApiError("invalid action_id")
+        return self.continue_task(task_id, f"[ui-action] {action}")
+
+    @staticmethod
+    def _valid_action_id(action: str) -> bool:
+        # Same shape the parser accepts, so an action can never be a payload.
+        import re
+
+        return bool(re.match(r"^[A-Za-z0-9_.:-]{1,120}$", action))
+
     # -- settings -----------------------------------------------------------
     def get_settings(self) -> Dict[str, Any]:
         return self.store.public_settings(self.settings)

@@ -73,6 +73,14 @@ class EventType(str, Enum):
     PERSONA_ACTIVE = "persona-active"
     REVIEW_DECIDED = "review-decided"
 
+    # Hybrid output and planning. ``ui`` carries an already-validated block for the
+    # GUI to render; ``ui-action`` is the user's click coming back as a new turn.
+    UI_BLOCK = "ui-block"
+    UI_ACTION = "ui-action"
+    PLAN_PROPOSED = "plan-proposed"
+    PLAN_STEP = "plan-step"
+    RAG_RETRIEVED = "rag-retrieved"
+
 
 @dataclass(frozen=True)
 class OnionEvent:

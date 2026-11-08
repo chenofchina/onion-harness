@@ -411,7 +411,80 @@ Three rules hold regardless of configuration:
 
 Configure it in Settings or via `auto_review` in the settings payload.
 
+### Hybrid output: Markdown + interactive UI
+
+Replies are not limited to prose. The model may emit a `<ui>` block containing
+limited HTML, and the GUI renders it as real components:
+
+```html
+<ui>
+  <p>Confirm the flash?</p>
+  <button onclick="sendAction('approve_flash')">确认刷机</button>
+</ui>
+```
+
+The security model is the interesting part, and it does not rely on sanitising
+strings at render time:
+
+* Python **parses** the block and keeps only an allowlisted tag/attribute set. A
+  `<script>`, an `<img onerror>`, an inline `style`, a `javascript:` href — all are
+  dropped before the GUI ever sees them, so nothing hostile survives to be rendered.
+* The GUI builds React elements from that data; it never assigns `innerHTML`. A
+  mistake in the allowlist therefore cannot become script execution.
+* `onclick="sendAction('id')"` is *not* JavaScript. It is a declarative action: the
+  click posts the id to the server, which feeds it back to the agent as an ordinary
+  user turn (`[ui-action] approve_flash`). Every approval, review and mode rule then
+  applies exactly as it would to typed text — a button is not a side door.
+
+A malformed block costs the widget, never the message: the prose still renders.
+
+### DAG task planner
+
+For a request that needs dependent steps — "check the weather, and if it rains send
+a message and turn on the humidifier" — the model calls `plan_task` with a JSON DAG.
+The plan is validated *before anything runs*:
+
+* cycles, self-dependencies and unknown step ids are rejected;
+* tools that do not exist are rejected, because a plan that fails at step 3 has
+  already run steps 1 and 2;
+* conditions (`when`) may only reference declared dependencies, and the grammar is
+  fixed — no expression evaluator, so a plan cannot execute text.
+
+`plan_task` **validates and returns** the plan; it does not execute it. Execution
+would mean tool calls that never passed approval, the safety reviewer or the mode
+gate, turning the planner into a way around every guard. The model gets the checked
+order back and makes the real calls on the normal path.
+
+### RAG++
+
+Retrieval is three steps, not one:
+
+1. **Rewrite** the question into a few extra probes, so recall is not limited to the
+   user's exact wording. The original query always stays first — a rewrite is a hint,
+   never a replacement.
+2. **Rerank** the pooled candidates against the real question, blending the model's
+   score with lexical overlap. Retrieval order is not relevance order.
+3. **Cite.** Surviving snippets get `[1]`, `[2]` ids and the prompt requires citation.
+   Snippets that score zero are dropped rather than handed over as context.
+
+Both model steps are optional and both degrade safely to plain lexical recall, with
+the degradation reported instead of hidden.
+
+### Silent command execution
+
+A Windows GUI app that spawns `powershell.exe` without the right flags gets a black
+console flashing on every tool call. Both mechanisms are applied because either alone
+has a gap: `CREATE_NO_WINDOW` (0x08000000) plus `STARTUPINFO` with `SW_HIDE`, and
+PowerShell is invoked with `-NoProfile -NonInteractive -WindowStyle Hidden`. `taskkill`,
+used to kill a timed-out tree, gets the same treatment — otherwise the cleanup flashes
+a window too.
+
+Output is captured on pipes and returned as text; nothing is written to a console.
+Timeouts are hard and kill the whole process tree, so a script that spawns a child
+cannot outlive the limit and hold the pipe open.
+
 ### Long-term memory
+
 
 Memory runs silently: it is not a feature you switch on and manage, it is what
 makes the second conversation easier than the first.
