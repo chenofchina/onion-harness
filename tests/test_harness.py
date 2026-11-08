@@ -152,8 +152,17 @@ class ModelConfigTest(unittest.TestCase):
         self.assertNotIn("sk-secret", json.dumps(config.to_public()))
 
     def test_limits_are_clamped(self):
-        config = build_model_config({"provider_id": "openai", "max_turns": 9999})
-        self.assertLessEqual(config.max_turns, 200)
+        config = build_model_config({"provider_id": "openai", "max_turns": 999_999})
+        self.assertEqual(config.max_turns, 10_000)
+
+    def test_long_runs_are_allowed(self):
+        """40 was too low for an autonomous run; 10,000 is the new ceiling."""
+        config = build_model_config({"provider_id": "openai", "max_turns": 5000})
+        self.assertEqual(config.max_turns, 5000)
+
+    def test_zero_turns_is_raised_to_one(self):
+        config = build_model_config({"provider_id": "openai", "max_turns": 0})
+        self.assertEqual(config.max_turns, 1)
 
 
 # ------------------------------------------------------- anthropic translation
@@ -594,3 +603,27 @@ class RuntimeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TurnLimitMessageTest(unittest.TestCase):
+    """The engine reports the limit as a bare error; it must read as actionable."""
+
+    def test_the_message_says_it_is_a_limit_not_a_failure(self):
+        from onion_harness.harness.adapters import _explain_turn_limit
+
+        text = _explain_turn_limit("Stopped after reaching max_turns=40", 40)
+        self.assertIn("turn budget", text)
+        self.assertIn("40", text)
+        self.assertIn("Settings", text)
+        self.assertIn("not a failure", text)
+
+    def test_other_errors_pass_through_unchanged(self):
+        from onion_harness.harness.adapters import _explain_turn_limit
+
+        self.assertEqual(_explain_turn_limit("connection refused", 40), "connection refused")
+
+    def test_unknown_limit_still_explains(self):
+        from onion_harness.harness.adapters import _explain_turn_limit
+
+        text = _explain_turn_limit("Stopped after reaching max_turns=40", 0)
+        self.assertIn("Settings", text)
+        self.assertNotIn("currently", text)

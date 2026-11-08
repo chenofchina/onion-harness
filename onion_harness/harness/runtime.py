@@ -510,7 +510,10 @@ class OnionRuntime:
             )
         tools = self._build_tools(task, model=model, session=session)
         processor = EngineMessageTranslator(
-            task.id, self._emit, context_window=model.context_window
+            task.id,
+            self._emit,
+            context_window=model.context_window,
+            max_turns=model.max_turns,
         )
         processor.verify_tools = mode_spec(model.mode).verifies_tool_output
 
@@ -1229,7 +1232,13 @@ def build_model_config(
     # the conversation. ``None`` means "not specified" throughout.
     temperature = _resolve_sampling(raw.get("temperature"), persona.temperature, clamp_temperature)
     top_p = _resolve_sampling(raw.get("top_p"), persona.top_p, clamp_top_p)
-    max_turns = int(raw.get("max_turns") or 40)
+    # `or 40` would turn an explicit 0 into the default, which hides a caller
+    # mistake; the clamp below is what should decide the floor.
+    raw_turns = raw.get("max_turns")
+    try:
+        max_turns = int(raw_turns) if raw_turns is not None and raw_turns != "" else 40
+    except (TypeError, ValueError):
+        max_turns = 40
     context_window = int(raw.get("context_window") or 128_000)
     keep_recent = int(raw.get("keep_recent") or 10)
 
@@ -1244,7 +1253,7 @@ def build_model_config(
         temperature=temperature,
         top_p=top_p,
         persona_id=persona.id,
-        max_turns=max(1, min(max_turns, 200)),
+        max_turns=max(1, min(max_turns, 10_000)),
         # The GUI allows up to 1M tokens; clamp to a sane floor and ceiling so a
         # typo cannot make the budget meaningless.
         context_window=max(4_000, min(context_window, 1_000_000)),

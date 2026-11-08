@@ -485,11 +485,14 @@ export function SettingsDialog({
           <input
             type="number"
             min={1}
-            max={200}
+            max={10000}
             value={maxTurns}
             onChange={(event) => setMaxTurns(Number(event.target.value))}
           />
-          <span className="field__hint">Hard stop for a single task.</span>
+          <span className="field__hint">
+            Hard stop for a single task. Up to 10,000; the default of 40 is enough for
+            most work, but a long autonomous run needs far more.
+          </span>
         </div>
 
         <div className="field">

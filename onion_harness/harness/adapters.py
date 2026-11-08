@@ -23,6 +23,25 @@ from onion_harness.harness.bridge import (
 )
 from onion_harness.harness.errors import sanitize
 
+def _explain_turn_limit(text: str, max_turns: int) -> str:
+    """Turn the engine's bare "max_turns reached" into something actionable.
+
+    The engine reports it as a plain error, which reads like a crash. It is not -
+    the run simply used its whole budget - and the fix is a setting the user owns,
+    so the message says that instead of leaving them to guess.
+    """
+    lowered = (text or "").lower()
+    if "max_turns" not in lowered and "max turns" not in lowered:
+        return text
+    limit = max_turns or 0
+    where = f" (currently {limit})" if limit else ""
+    return (
+        f"The task used its entire turn budget{where} without finishing. This is a "
+        "limit, not a failure: raise Max agent turns in Settings and send the message "
+        "again, or break the request into smaller steps."
+    )
+
+
 def _error_text(message: Any, fallback: str) -> str:
     """Read an engine message's error text safely.
 
@@ -86,9 +105,17 @@ class PermissionAdapter:
 class EngineMessageTranslator:
     """Converts engine messages into Onion events with stable sequencing."""
 
-    def __init__(self, task_id: str, emit, context_window: int = 128_000) -> None:
+    def __init__(
+        self,
+        task_id: str,
+        emit,
+        context_window: int = 128_000,
+        max_turns: int = 0,
+    ) -> None:
         self._task_id = task_id
         self._emit = emit
+        # Used only to make the turn-limit error actionable; 0 means unknown.
+        self.max_turns = int(max_turns or 0)
         # The real window comes from the run configuration; the class default is
         # only a fallback. Hardcoding it here made the usage ring always show
         # 128k no matter what the user configured.
@@ -230,12 +257,13 @@ class EngineMessageTranslator:
             if usage is not None:
                 self._accumulate(usage, replace=True)
             if getattr(message, "is_error", False):
+                text = sanitize(_error_text(message, "task failed"))
                 events.append(
                     event(
                         EventType.ERROR,
                         self._task_id,
                         0,
-                        message=sanitize(_error_text(message, "task failed")),
+                        message=_explain_turn_limit(text, self.max_turns),
                         code="task",
                     )
                 )

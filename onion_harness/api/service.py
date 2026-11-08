@@ -1786,7 +1786,7 @@ _INVALID = object()
 _SETTING_BOUNDS = {
     "context_window": (4_000, 1_000_000),
     "keep_recent_messages": (2, 40),
-    "max_turns": (1, 200),
+    "max_turns": (1, 10_000),
 }
 
 
