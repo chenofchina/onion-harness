@@ -59,7 +59,9 @@ class ServiceStatus:
 
     @property
     def available(self) -> bool:
-        return self.state in ("running", "external")
+        # "builtin" counts as available: search works, just not through an external
+        # service, and saying otherwise would make the GUI look broken.
+        return self.state in ("running", "external", "builtin")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -202,14 +204,17 @@ class SearchService:
 
         resolved = self._resolve_command()
         if resolved is None:
+            # Not a problem any more: the tool falls back to its built-in backend, so
+            # search keeps working with no external service. Reported as "builtin" so
+            # the GUI says what is actually serving requests.
             self.status = ServiceStatus(
-                state="unavailable",
+                state="builtin",
                 detail=(
-                    "the search service is not installed. Install it, or set a command in "
-                    "Settings; the agent reports search as unavailable until then."
+                    "using Onion's built-in search; install search-neo or set "
+                    "web_search_command for cross-engine summaries"
                 ),
             )
-            logger.info("search service not found; web search will report unavailable")
+            logger.info("no external search service; using the built-in backend")
             return self.status
 
         self.status = ServiceStatus(state="starting", detail="launching " + resolved[0])
@@ -371,7 +376,9 @@ class SearchService:
 
     def refresh(self) -> ServiceStatus:
         """Re-probe without changing ownership. Used by the status endpoint."""
-        if self.status.state == "unavailable" and not self.enabled:
+        if self.status.state in ("unavailable", "builtin") and not self.enabled:
+            return self.status
+        if self.status.state == "builtin":
             return self.status
         if self._process is not None and self._process.poll() is None:
             self.status.state = "running"

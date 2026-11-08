@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import logging
 import os
 import secrets
 import sys
@@ -33,6 +34,8 @@ MASTER_CRED_TARGET = "onion:master"
 
 # PBKDF2 iterations. The master secret is already high-entropy (32 random
 # bytes), so this is defence in depth rather than the primary strength.
+logger = logging.getLogger("onion.secrets")
+
 _KDF_ITERATIONS = 200_000
 _ITERATIONS_INDEX = 50_000
 _KEY_BYTES = 32
@@ -41,6 +44,48 @@ _NONCE_BYTES = 12
 
 class SecretError(RuntimeError):
     """The credential store is unavailable or refused an operation."""
+
+
+def _import_win32cred():
+    """Import ``win32cred``, adding pywin32's directory to the path if needed.
+
+    Returns the module, or None. This is deliberately more than a plain import: in
+    a frozen build the module exists but is not on ``sys.path``, and the difference
+    between "not installed" and "installed but unreachable" is worth handling, since
+    both used to look identical from the outside.
+    """
+    try:
+        import win32cred
+
+        return win32cred
+    except Exception:  # noqa: BLE001 - fall through to the path probe
+        pass
+
+    candidates = []
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        internal = os.path.join(base, "_internal")
+        root = internal if os.path.isdir(internal) else base
+        candidates.append(os.path.join(root, "win32"))
+    # A source checkout with pywin32 installed next to the interpreter.
+    try:
+        import site
+
+        for entry in list(site.getsitepackages()) + [site.getusersitepackages()]:
+            candidates.append(os.path.join(entry, "win32"))
+    except Exception:  # noqa: BLE001
+        pass
+
+    for candidate in candidates:
+        if candidate and os.path.isdir(candidate) and candidate not in sys.path:
+            sys.path.insert(0, candidate)
+            try:
+                import win32cred
+
+                return win32cred
+            except Exception:  # noqa: BLE001
+                sys.path.remove(candidate)
+    return None
 
 
 # --------------------------------------------------------------------- stores
@@ -65,17 +110,32 @@ class WindowsCredentialStore(SecretStore):
 
     Keys are stored as generic credentials, readable by the current Windows user
     only. Other accounts on the machine cannot retrieve them.
+
+    pywin32's modules live in a directory that a normal install puts on ``sys.path``
+    through a ``.pth`` file. A frozen build never processes ``.pth``, so the import
+    can fail there even though the modules are bundled. The interpreter is therefore
+    probed for the directory itself before giving up: a silent failure here is
+    expensive to diagnose, because it presents as "my API keys disappear on every
+    restart" rather than "bundling is broken".
     """
 
     def __init__(self) -> None:
         self._cred = None
-        if sys.platform == "win32":
-            try:
-                import win32cred
+        self._reason = ""
+        if sys.platform != "win32":
+            self._reason = "not running on Windows"
+            return
+        cred = _import_win32cred()
+        if cred is None:
+            self._reason = "pywin32 is not importable"
+            logger.warning("credential store unavailable: %s", self._reason)
+            return
+        self._cred = cred
 
-                self._cred = win32cred
-            except Exception:  # noqa: BLE001 - pywin32 missing
-                self._cred = None
+    @property
+    def reason(self) -> str:
+        """Why the store is unavailable. Empty when it works."""
+        return self._reason
 
     def available(self) -> bool:
         return self._cred is not None
@@ -85,7 +145,11 @@ class WindowsCredentialStore(SecretStore):
             raise SecretError("Windows credential manager is unavailable")
         try:
             entry = self._cred.CredRead(name, self._cred.CRED_TYPE_GENERIC, 0)
-        except Exception:  # noqa: BLE001 - not found raises pywintypes.error
+        except Exception as exc:  # noqa: BLE001 - not found raises pywintypes.error
+            # "Not found" and "cannot read" both land here, and they need different
+            # responses: one means no key was saved, the other means the store is
+            # broken. Logged so the difference is visible instead of silent.
+            logger.debug("credential read failed for %s: %r", name, exc)
             return None
         blob = entry.get("CredentialBlob") or b""
         if isinstance(blob, str):

@@ -333,12 +333,17 @@ aggregates Baidu and Bing and returns one compact JSON document. Running it loca
 is the point: no cloud API key ships inside the binary, and it works on networks
 where cloud search APIs are unreachable.
 
-**Onion starts it for you.** On launch the app looks for the service and, if it is
-not already running, starts it — silently, and tied to Onion's own lifetime so it
-cannot outlive the app. If the service is not installed, the app still starts
-normally and the agent reports search as unavailable; a missing optional service is
-a degraded feature, not a reason to refuse to launch. Settings shows which of these
-happened.
+**It works with nothing installed.** Onion ships a built-in backend that queries
+public result pages directly, so `web_search` answers on a fresh install with no
+service to find. An external search-neo is used when it is running — a purpose-built
+aggregator with cross-engine summaries produces better answers than scraping — and
+the built-in path takes over silently when it is not. Settings reports which one is
+serving and why.
+
+**If an external service exists, Onion starts it.** On launch it probes the
+endpoint, starts the service when nothing answers, and stops it on shutdown. The
+child is tied to Onion's lifetime through a Job Object, so even a force-kill cannot
+leave it holding the port. An instance already running is reused, never duplicated.
 
 An instance that is already running is **reused, not duplicated** — starting a
 second copy would either fight for the port or shadow the one you configured
@@ -374,6 +379,10 @@ told it can search when it cannot.
 If the service lives somewhere unusual, set `web_search_command` to an argv list,
 for example `["python", "-m", "search_neo"]`; otherwise Onion looks for
 `search-neo` on `PATH` and then for a `search_neo` Python module.
+
+Either way the fail-closed rule holds: when both paths fail, the tool reports an
+error and the model is told the search failed, never handed an empty result to fill
+in from memory.
 
 ### Personas
 

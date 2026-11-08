@@ -98,14 +98,24 @@ def _looks_like_a_test_run() -> bool:
     failed to authenticate. The check is process-wide because the conftest hook
     that sets ``ONION_SECRET_STORE`` is bypassed by ``python -m unittest``.
     """
+    # A frozen build is never a test runner. This check has to come first: the
+    # bundled runtime imports unittest while loading webview/pythonnet, which made
+    # every packaged launch look like a test run - so the app used an in-memory
+    # store, and every saved API key appeared to vanish on the next start.
+    if getattr(sys, "frozen", False):
+        return False
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return True
     if os.environ.get("ONION_SECRET_STORE", "").strip().lower() == "memory":
         return True
-    if "pytest" in sys.modules or "unittest" in sys.modules:
-        return True
+    # Only the interpreter that is *running* a test runner counts. Merely importing
+    # unittest (which plenty of libraries do) must not switch the credential store.
     argv0 = Path(sys.argv[0] or "").name.lower()
-    return argv0 in {"pytest", "py.test", "unittest"}
+    if argv0 in {"pytest", "py.test", "unittest"}:
+        return True
+    if "pytest" in sys.modules:
+        return True
+    return False
 
 
 def _default_store(root: Path) -> SecretStore:
@@ -208,6 +218,15 @@ class AppStore:
         # Overrides are not secret, and the Advanced drawer needs them to prefill
         # whatever the user typed for a provider or custom endpoint.
         public["base_urls"] = dict(settings.get("base_urls", {}) or {})
+        # Say when the credential store is not working. Without this, a key that
+        # was saved but cannot be read looks identical to a key that was never
+        # saved - and the user retypes it on every launch without knowing why.
+        store = self._vault.store
+        reason = getattr(store, "reason", "")
+        public["credential_store"] = {
+            "available": bool(store.available()),
+            "reason": reason,
+        }
         return public
 
     # -- keys ---------------------------------------------------------------

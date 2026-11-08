@@ -69,6 +69,8 @@ class MemoryStore:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # Set by recent(): how many rows the current key could not decrypt.
+        self.last_unreadable = 0
         with self._lock:
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
@@ -195,6 +197,18 @@ class MemoryStore:
         return int(count)
 
     # -- reads --------------------------------------------------------------
+    def unreadable_count(self) -> int:
+        """How many stored rows the current key cannot decrypt."""
+        with self._lock:
+            rows = self._conn.execute("SELECT ciphertext FROM memories").fetchall()
+        bad = 0
+        for row in rows:
+            try:
+                self._decode(row["ciphertext"])
+            except Exception:  # noqa: BLE001
+                bad += 1
+        return bad
+
     def recall(self, query: str, limit: int = 6, kinds: Optional[List[str]] = None) -> List[Memory]:
         """Ranked retrieval for one query.
 
@@ -232,16 +246,30 @@ class MemoryStore:
         return [memory for _score, memory in scored[:limit]]
 
     def recent(self, limit: int = 50, kinds: Optional[List[str]] = None) -> List[Memory]:
+        """Most recent memories, skipping rows that cannot be decrypted.
+
+        One unreadable row must not blank the whole panel. It happens for a real
+        reason - the master secret can differ from the one a file was written with
+        (a rebuilt credential entry, a data directory copied between machines) - and
+        the useful response is to show what does decrypt and report how many did
+        not, not to return an empty list that looks like "you have no memories".
+        """
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM memories ORDER BY last_used_at DESC LIMIT ?", (limit,)
             ).fetchall()
         out: List[Memory] = []
+        unreadable = 0
         for row in rows:
-            memory = self._from_row(row)
+            try:
+                memory = self._from_row(row)
+            except Exception:  # noqa: BLE001 - a wrong key, not a reason to fail
+                unreadable += 1
+                continue
             if kinds and memory.kind.value not in kinds:
                 continue
             out.append(memory)
+        self.last_unreadable = unreadable
         return out
 
     def count(self) -> int:

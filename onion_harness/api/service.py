@@ -198,6 +198,45 @@ class OnionService:
     def web_search_config_public(self) -> Dict[str, Any]:
         return self.web_search_config.to_public()
 
+    def diagnostics(self) -> Dict[str, Any]:
+        """Self-check for the things that silently degrade.
+
+        Exposed because "the key does not persist" and "the credential store is
+        broken" are indistinguishable from the outside, and guessing which one is
+        happening wastes a rebuild cycle each time.
+        """
+        store = self.store.vault.store
+        info: Dict[str, Any] = {
+            "credential_store": {
+                "type": type(store).__name__,
+                "available": store.available(),
+                "reason": getattr(store, "reason", ""),
+            }
+        }
+        try:
+            cred = getattr(store, "_cred", None)
+            info["credential_store"]["module"] = getattr(cred, "__name__", "")
+            if cred is not None:
+                try:
+                    entry = cred.CredRead(
+                        "onion:provider:deepseek", cred.CRED_TYPE_GENERIC, 0
+                    )
+                    blob = entry.get("CredentialBlob")
+                    info["credential_store"]["probe"] = f"read ok, {len(blob or b'')} bytes"
+                except Exception as exc:  # noqa: BLE001
+                    info["credential_store"]["probe"] = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            info["credential_store"]["probe"] = f"probe failed: {exc}"
+
+        try:
+            info["vault_has_deepseek"] = store.get("onion:provider:deepseek") is not None
+        except Exception as exc:  # noqa: BLE001
+            info["vault_has_deepseek"] = f"error: {exc}"
+        info["memory_enabled"] = self.memory is not None
+        info["web_search"] = self.web_search_config.to_public()
+        info["frozen"] = bool(getattr(__import__("sys"), "frozen", False))
+        return info
+
     def web_search_status(self) -> Dict[str, Any]:
         """Health of the local search service, for the settings panel."""
         supervisor = self.search_service
@@ -220,10 +259,21 @@ class OnionService:
         If no credential store exists the database cannot be encrypted, and a
         silent plaintext fallback would be worse than no memory at all. In that
         case memory is disabled and the rest of the app works unchanged.
+
+        Disabled rather than degraded to a weaker key, because of the specific
+        failure that causes: without a real store a fallback key is generated fresh
+        in memory, memories written under it are unreadable next launch, and a later
+        launch *with* a working store then finds a database it cannot decrypt. Both
+        symptoms read as "memory is broken" while the cause is the key.
         """
         path = self.data_dir / "memory.sqlite3"
+        secret_store = self.store.vault.store
+        if not secret_store.available():
+            reason = getattr(secret_store, "reason", "") or "unavailable"
+            logger.warning("memory disabled: the credential store is %s", reason)
+            return None, None
         try:
-            cipher = cipher_from_store(self.store.vault.store)
+            cipher = cipher_from_store(secret_store)
         except SecretError as exc:
             logger.warning("memory disabled: no encryption key available (%s)", exc)
             return None, None
@@ -567,9 +617,28 @@ class OnionService:
     # -- memory -------------------------------------------------------------
     def memory_stats(self) -> Dict[str, Any]:
         if self.memory is None:
-            return {"enabled": False, "total": 0, "by_kind": {}}
+            secret_store = self.store.vault.store
+            return {
+                "enabled": False,
+                "total": 0,
+                "by_kind": {},
+                # Say *why* it is off; "disabled" with no reason is what makes a
+                # user assume the feature is broken rather than unconfigured.
+                "reason": (
+                    "the credential store is unavailable: "
+                    + (getattr(secret_store, "reason", "") or "unknown reason")
+                    if not secret_store.available()
+                    else "no encryption key could be derived"
+                ),
+                "credential_store": bool(secret_store.available()),
+            }
         stats = dict(self.memory.stats())
         stats["enabled"] = True
+        try:
+            unreadable = self.memory_store.unreadable_count() if self.memory_store else 0
+        except Exception:  # noqa: BLE001
+            unreadable = 0
+        stats["unreadable"] = unreadable
         return stats
 
     def memory_list(self, limit: int = 100) -> List[Dict[str, Any]]:

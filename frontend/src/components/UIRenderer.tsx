@@ -27,9 +27,16 @@ function renderNodes(
   if (depth > 12) return null // guard against a pathological tree
   return nodes.map((node, index) => {
     const key = nodeKey(node, index)
-    const children: ReactNode = node.children?.length
+    // A bare text run from Python, carrying its position among the elements.
+    if (node.tag === '#text') return node.text || ''
+    // A node can carry both text and element children:
+    // `<p>Press <b>OK</b> now</p>` arrives as text plus a child. Rendering only the
+    // children dropped the prose, which is one way a valid block looked half-drawn.
+    const childNodes = node.children?.length
       ? renderNodes(node.children, onAction, depth + 1)
-      : node.text || null
+      : null
+    const children: ReactNode =
+      node.text && childNodes ? [node.text, ...childNodes] : childNodes || node.text || null
 
     if (node.tag === 'button') {
       const actionId = node.attrs?.['data-action']
@@ -38,7 +45,9 @@ function renderNodes(
           key={key}
           type="button"
           className={['ui-btn', node.attrs?.class].filter(Boolean).join(' ')}
-          disabled={node.attrs?.disabled !== undefined}
+          // Boolean attributes arrive as "" (present) or are absent entirely, so
+          // presence - not truthiness - decides.
+          disabled={'disabled' in (node.attrs || {})}
           onClick={() => {
             if (actionId) onAction(actionId)
           }}
@@ -52,15 +61,19 @@ function renderNodes(
       // Inputs are rendered read-only on purpose: a value typed here would have no
       // way back to the agent unless it were submitted with an action, and a
       // half-working form is worse than a clearly inert one.
+      const isCheckbox = node.attrs?.type === 'checkbox'
       return (
         <input
           key={key}
-          type={node.attrs?.type === 'checkbox' ? 'checkbox' : 'text'}
+          type={isCheckbox ? 'checkbox' : 'text'}
           className={['ui-input', node.attrs?.class].filter(Boolean).join(' ')}
           placeholder={node.attrs?.placeholder}
-          defaultValue={node.attrs?.value}
-          disabled={node.attrs?.disabled !== undefined}
-          readOnly
+          // `value` on a checkbox is ignored by React, and `checked` on a text
+          // input is a warning; each control takes the one that applies.
+          defaultChecked={isCheckbox ? 'checked' in (node.attrs || {}) : undefined}
+          defaultValue={isCheckbox ? undefined : node.attrs?.value}
+          disabled={'disabled' in (node.attrs || {})}
+          readOnly={!isCheckbox}
         />
       )
     }
@@ -77,6 +90,15 @@ function renderNodes(
       {
         key,
         className: className ? `ui-${node.tag} ${className}` : `ui-${node.tag}`,
+        // These attributes survived the allowlist but were being dropped here, so
+        // an already-open <details> closed and a spanning table cell did not span.
+        ...(node.tag === 'details' && 'open' in (node.attrs || {}) ? { open: true } : {}),
+        ...(node.tag === 'td' || node.tag === 'th'
+          ? {
+              colSpan: node.attrs?.colspan ? Number(node.attrs.colspan) : undefined,
+              rowSpan: node.attrs?.rowspan ? Number(node.attrs.rowspan) : undefined,
+            }
+          : {}),
       },
       children,
     )

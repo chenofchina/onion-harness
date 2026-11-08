@@ -58,6 +58,9 @@ hiddenimports += [
     # expects to find it, so naming it avoids an analysis warning.
     "win32cred",
     "win32api",
+    # win32cred imports this internally; without it CredRead raises
+    # ModuleNotFoundError at call time, which reads as "no key saved".
+    "win32timezone",
     "win32ctypes",
     "cryptography",
     "cryptography.hazmat.primitives.ciphers.aead",
@@ -89,7 +92,11 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    # pywin32's extension modules live in a `win32` directory that a normal install
+    # puts on sys.path through a .pth file. A frozen build never processes .pth, so
+    # `import win32cred` fails, the credential store looks unavailable, and every
+    # saved API key appears to vanish on restart.
+    runtime_hooks=[str(ROOT / "packaging" / "rthook_pywin32.py")],
     excludes=excludes,
     noarchive=False,
 )

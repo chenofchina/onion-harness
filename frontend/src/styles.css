@@ -4625,7 +4625,34 @@ button {
 .ui-block h3,
 .ui-block h4 { margin: 0; font-size: 0.95rem; }
 .ui-block code,
-.ui-block pre { font-family: var(--onion-mono); font-size: 0.76rem; }
+.ui-block pre {
+  font-family: var(--onion-mono);
+  font-size: 0.76rem;
+}
+/* Without this a <pre> loses every newline and reads as one long line - one of
+   the ways a valid block looks "unrendered". */
+.ui-block pre {
+  white-space: pre-wrap;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--onion-radius-sm);
+  background: color-mix(in srgb, var(--md-sys-color-surface-container-lowest) 70%, transparent);
+  overflow-x: auto;
+}
+.ui-block code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--md-sys-color-surface-container-highest) 60%, transparent);
+}
+.ui-block pre code {
+  padding: 0;
+  background: none;
+}
+/* Collapse the whitespace between tags that the model indents its HTML with,
+   so a block does not render with a stack of empty gaps. */
+.card.ui-block > * { margin: 0; }
+.card.ui-block details > summary { cursor: pointer; font-size: 0.8rem; }
+.card.ui-block label { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; }
 
 /* --------------------------------------------------------------- plan card */
 

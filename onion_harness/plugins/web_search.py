@@ -238,9 +238,18 @@ class WebSearchClient:
     accepts blocking handlers; a five-second ceiling keeps that acceptable.
     """
 
-    def __init__(self, config: Optional[WebSearchConfig] = None, session=None) -> None:
+    def __init__(
+        self,
+        config: Optional[WebSearchConfig] = None,
+        session=None,
+        builtin=None,
+    ) -> None:
         self.config = config or WebSearchConfig()
         self._session = session
+        # Used when no external service answers. ``None`` disables the fallback,
+        # which is what the tests exercise to check the fail-closed path in
+        # isolation.
+        self._builtin = builtin
 
     def _get_session(self):
         if self._session is not None:
@@ -251,13 +260,41 @@ class WebSearchClient:
         return self._session
 
     def search(self, query: str) -> SearchResponse:
-        """Run one search. Raises :class:`SearchError` on any failure."""
+        """Run one search. Raises :class:`SearchError` on any failure.
+
+        Order: an external service if it answers, otherwise the built-in backend.
+        The fallback exists because reporting "unavailable" when Onion could simply
+        search for itself is a worse outcome than a slightly noisier result set.
+        """
         clean = " ".join(str(query or "").split())
         if not clean:
             raise SearchError(
                 "web_search was called without a query. Provide search keywords.",
                 code="bad_request",
             )
+
+        try:
+            return self._search_external(clean)
+        except SearchError as exc:
+            if self._builtin is None:
+                raise
+            logger.info("external search unavailable (%s); using the built-in backend", exc.code)
+            return self._search_builtin(clean, exc)
+
+    def _search_builtin(self, clean: str, first_error: SearchError) -> SearchResponse:
+        try:
+            raw = self._builtin.search(clean)
+        except Exception as exc:  # noqa: BLE001 - both paths failed
+            raise SearchError(
+                "The search service is unavailable and the built-in search could not "
+                "reach the web either. Tell the user the search failed instead of "
+                "answering from memory.",
+                code="search_unavailable",
+                detail=f"external: {first_error.detail or first_error}; builtin: {exc}",
+            ) from None
+        return parse_payload(raw.to_compact(), clean, self.config.max_results)
+
+    def _search_external(self, clean: str) -> SearchResponse:
 
         endpoint = self.config.endpoint()
         params = {"q": clean, "compact": 1}
@@ -385,9 +422,10 @@ class WebSearchTool:
         self,
         config: Optional[WebSearchConfig] = None,
         client: Optional[WebSearchClient] = None,
+        builtin=None,
     ) -> None:
         self.config = config or (client.config if client is not None else WebSearchConfig())
-        self.client = client or WebSearchClient(self.config)
+        self.client = client or WebSearchClient(self.config, builtin=builtin)
 
     def handler(self, args: Dict[str, Any]) -> str:
         """Never returns an error value: failures raise, which marks the call failed."""
@@ -412,6 +450,7 @@ class WebSearchTool:
 def build_web_search_tool(
     config: Optional[WebSearchConfig] = None,
     client: Optional[WebSearchClient] = None,
+    builtin: Any = None,
 ) -> Optional[OnionTool]:
     """The tool, or ``None`` when search is switched off.
 
@@ -421,7 +460,13 @@ def build_web_search_tool(
     config = config or WebSearchConfig()
     if not config.enabled:
         return None
-    return WebSearchTool(config, client).as_tool()
+    # The built-in backend is on by default: web search should work on a fresh
+    # install with no extra service to find and install.
+    if client is None and builtin is None:
+        from onion_harness.plugins.builtin_search import BuiltinSearch
+
+        builtin = BuiltinSearch(timeout=config.timeout, max_results=config.max_results)
+    return WebSearchTool(config, client, builtin=builtin).as_tool()
 
 
 __all__ = [

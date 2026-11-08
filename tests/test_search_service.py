@@ -377,7 +377,11 @@ class AppIntegrationTest(unittest.TestCase):
             supervisor = _start_search_service(service)
             # Either a supervisor object or None; never an exception.
             status = service.web_search_status()
-            self.assertIn(status["state"], ("unavailable", "failed", "stopped", "external"))
+            # "builtin" is the expected state now: with no external service the tool
+            # falls back to its in-process backend and search still works.
+            self.assertIn(
+                status["state"], ("builtin", "unavailable", "failed", "stopped", "external")
+            )
             if supervisor is not None:
                 supervisor.stop()
         finally:

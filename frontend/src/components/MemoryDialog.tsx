@@ -168,6 +168,7 @@ export function MemoryDialog({
           <span>
             Long-term memory is disabled: no encryption key is available from the system
             credential manager, and storing memories unencrypted is not offered.
+            {stats?.reason ? ` ${stats.reason}` : ''}
           </span>
         </div>
       ) : (
@@ -253,6 +254,19 @@ export function MemoryDialog({
               />
             </div>
           </div>
+
+          {(stats?.unreadable ?? 0) > 0 && (
+            <div className="card-change__warn">
+              <span>
+                {stats?.unreadable} stored note
+                {(stats?.unreadable ?? 0) === 1 ? '' : 's'} cannot be decrypted with the
+                current key, so {stats?.unreadable === 1 ? 'it is' : 'they are'} hidden
+                rather than shown as garbage. This happens when the encryption key
+                changed after the notes were written — for example a rebuilt credential
+                entry. Forget all and start fresh if the old notes are not needed.
+              </span>
+            </div>
+          )}
 
           {filtered.length === 0 ? (
             <span className="monitor-empty">

@@ -344,6 +344,10 @@ export type MemoryStats = {
   enabled: boolean
   total: number
   by_kind: Record<string, number>
+  /** Present when memory is disabled: why it is off. */
+  reason?: string
+  /** Notes the current key cannot decrypt. */
+  unreadable?: number
 }
 
 export type Bootstrap = {

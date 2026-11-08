@@ -56,6 +56,9 @@ ALLOWED_TAGS = {
 
 VOID_TAGS = {"br", "hr", "input"}
 
+# Attributes whose presence is the value. HTMLParser reports these as None.
+_BOOLEAN_ATTRS = {"checked", "disabled", "open", "readonly", "selected", "multiple"}
+
 # Attributes kept per tag. Nothing global: an allowlist per tag is the only way
 # to keep `style` and `onerror` off elements that would use them.
 ALLOWED_ATTRS: Dict[str, set] = {
@@ -202,22 +205,33 @@ class _NodeBuilder(HTMLParser):
     def handle_data(self, data: str) -> None:
         if not data:
             return
-        if len(self._stack) == 1:
-            # Text directly inside <ui> with no element: keep it, it is content.
+        # A bare text run becomes its own node instead of accumulating on the
+        # parent. Without this, `<p>Press <b>OK</b> now</p>` collapsed both text
+        # runs onto the <p> and the rendered output read "Press now OK".
+        if data.strip():
+            self._stack[-1].children.append(UINode(tag="#text", text=data))
+        elif self._stack[-1].text and not self._stack[-1].children:
+            # Preserve meaningful inner whitespace only when there is no structure
+            # around it; otherwise it is just the model's indentation.
             self._stack[-1].text += data
-            return
-        self._stack[-1].text += data
 
     # -- helpers -----------------------------------------------------------
     def _clean_attrs(self, tag: str, attrs: Dict[str, Optional[str]]) -> Dict[str, str]:
         allowed = set(ALLOWED_ATTRS.get("*", set())) | set(ALLOWED_ATTRS.get(tag, set()))
         out: Dict[str, str] = {}
         for name, value in attrs.items():
-            if value is None:
-                continue
             lowered = name.lower()
-            if lowered in allowed:
-                out[lowered] = value
+            if lowered not in allowed:
+                continue
+            if value is None:
+                # HTML boolean attributes carry no value: `<details open>` and
+                # `<input checked>` reach the parser as None. Dropping them made a
+                # spoken-for attribute silently disappear, so an "already open"
+                # section collapsed and a checked box showed unchecked.
+                if lowered in _BOOLEAN_ATTRS:
+                    out[lowered] = ""
+                continue
+            out[lowered] = value
         return out
 
     @staticmethod
@@ -292,12 +306,29 @@ def parse_ui_block(inner: str) -> Tuple[List[UINode], List[UIAction], str]:
     return real_nodes, builder.actions, ""
 
 
+def _node_text(node: UINode) -> str:
+    """All text under a node, in document order.
+
+    Needed now that prose lives in ``#text`` children rather than on the parent:
+    reading ``node.text`` alone produced an empty label, so a button fell back to
+    showing its action id instead of the words the model wrote.
+    """
+    if node.tag == "#text":
+        return node.text
+    parts = [node.text] if node.text else []
+    for child in node.children:
+        parts.append(_node_text(child))
+    return " ".join(part for part in parts if part)
+
+
 def _collect_action_labels(nodes: List[UINode]) -> Dict[str, str]:
     labels: Dict[str, str] = {}
     for node in nodes:
+        if node.tag == "#text":
+            continue
         action_id = node.attrs.get("data-action")
         if action_id:
-            text = " ".join(node.text.split())
+            text = " ".join(_node_text(node).split())
             if text:
                 labels[action_id] = text[:80]
         if node.children:
