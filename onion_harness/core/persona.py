@@ -184,10 +184,17 @@ def compose_persona_overlay(persona: Optional[PersonaSpec], base: str) -> str:
 # ------------------------------------------------------------------ library
 @dataclass
 class PersonaLibrary:
-    """Built-ins plus any valid definition files found on disk."""
+    """Built-ins plus any valid definition files found on disk.
+
+    Custom personas are ordinary JSON files under ``<data_dir>/personas``. Writing
+    through this class (rather than editing the files by hand) means the same
+    validation applies to a GUI edit as to a hand-written file, so a persona can
+    never enter the system through a weaker path.
+    """
 
     personas: List[PersonaSpec] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    directory: Optional[Path] = None
 
     def get(self, persona_id: Optional[str]) -> PersonaSpec:
         wanted = (persona_id or "").strip().lower()
@@ -202,27 +209,133 @@ class PersonaLibrary:
     def to_public(self) -> List[Dict[str, Any]]:
         return [spec.to_dict() for spec in self.personas]
 
+    # -- custom personas ----------------------------------------------------
+    def save(
+        self,
+        *,
+        persona_id: str,
+        label: str,
+        overlay: str,
+        temperature: Any,
+        top_p: Any,
+        description: str = "",
+    ) -> PersonaSpec:
+        """Create or replace a custom persona. Raises :class:`PersonaError`."""
+        if self.directory is None:
+            raise PersonaError("personas cannot be saved: no data directory configured")
+
+        clean_id = str(persona_id or "").strip().lower()
+        requires = validate_persona_fields(
+            persona_id=clean_id,
+            label=label,
+            overlay=overlay,
+            temperature=temperature,
+            top_p=top_p,
+        )
+        if requires:
+            raise PersonaError(requires)
+
+        spec = PersonaSpec(
+            id=clean_id,
+            label=str(label).strip(),
+            description=str(description or "").strip(),
+            overlay=str(overlay).strip(),
+            temperature=clamp_temperature(temperature),
+            top_p=clamp_top_p(top_p),
+            builtin=False,
+        )
+        self.directory.mkdir(parents=True, exist_ok=True)
+        path = self.directory / f"{clean_id}.json"
+        payload = {
+            "id": spec.id,
+            "label": spec.label,
+            "description": spec.description,
+            "overlay": spec.overlay,
+            "sampling": {"temperature": spec.temperature, "top_p": spec.top_p},
+        }
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+        # Update the in-memory list so the change applies without a restart.
+        self.personas = [item for item in self.personas if item.id != spec.id] + [spec]
+        self.personas.sort(key=lambda item: (not item.builtin, item.label.lower()))
+        self.errors = [error for error in self.errors if not error.startswith(f"{path.name}:")]
+        return spec
+
+    def delete(self, persona_id: str) -> None:
+        """Remove a custom persona. Built-ins are not deletable."""
+        clean_id = str(persona_id or "").strip().lower()
+        if clean_id in BUILTIN_BY_ID:
+            raise PersonaError("built-in personas cannot be deleted")
+        if self.directory is None:
+            raise PersonaError("personas cannot be deleted: no data directory configured")
+
+        path = self.directory / f"{clean_id}.json"
+        if not path.exists():
+            raise PersonaError(f"no custom persona named {clean_id!r}")
+        path.unlink()
+        self.personas = [item for item in self.personas if item.id != clean_id]
+
     @classmethod
     def load(cls, directory: Optional[str | Path] = None) -> "PersonaLibrary":
         personas: List[PersonaSpec] = list(BUILTIN_PERSONAS)
         errors: List[str] = []
-        if directory is not None:
-            folder = Path(directory)
-            if folder.is_dir():
-                for path in sorted(folder.glob("*.json")):
-                    spec, error = _load_persona_file(path)
-                    if error:
-                        errors.append(error)
-                        logger.warning("persona file ignored: %s", error)
-                        continue
-                    assert spec is not None
-                    if spec.id in BUILTIN_BY_ID:
-                        errors.append(
-                            f"{path.name}: id {spec.id!r} collides with a built-in persona"
-                        )
-                        continue
-                    personas.append(spec)
-        return cls(personas=personas, errors=errors)
+        folder: Optional[Path] = Path(directory) if directory is not None else None
+        if folder is not None and folder.is_dir():
+            for path in sorted(folder.glob("*.json")):
+                spec, error = _load_persona_file(path)
+                if error:
+                    errors.append(error)
+                    logger.warning("persona file ignored: %s", error)
+                    continue
+                assert spec is not None
+                if spec.id in BUILTIN_BY_ID:
+                    errors.append(
+                        f"{path.name}: id {spec.id!r} collides with a built-in persona"
+                    )
+                    continue
+                personas.append(spec)
+        personas.sort(key=lambda item: (not item.builtin, item.label.lower()))
+        return cls(personas=personas, errors=errors, directory=folder)
+
+
+class PersonaError(ValueError):
+    """A custom persona could not be saved. The message is shown to the user."""
+
+
+def validate_persona_fields(
+    *, persona_id: str, label: str, overlay: str, temperature: Any, top_p: Any
+) -> str:
+    """Return an error message, or an empty string when the values are usable."""
+    clean_id = str(persona_id or "").strip().lower()
+    if not clean_id:
+        return "an id is required"
+    if not all(ch.isalnum() or ch in "-_" for ch in clean_id):
+        return "the id may contain only letters, digits, '-' and '_'"
+    if len(clean_id) > 40:
+        return "the id must be 40 characters or fewer"
+    if clean_id in BUILTIN_BY_ID:
+        return f"{clean_id!r} is a built-in persona; choose a different id"
+    if not str(label or "").strip():
+        return "a label is required"
+    if not str(overlay or "").strip():
+        # An empty overlay is the one thing that would make a persona do nothing
+        # while appearing to be applied, which is worse than refusing the save.
+        return "the persona prompt cannot be empty"
+    if len(str(overlay)) > 8000:
+        return "the persona prompt is too long (limit 8000 characters)"
+    for name, value, low, high in (
+        ("temperature", temperature, TEMPERATURE_MIN, TEMPERATURE_MAX),
+        ("top_p", top_p, TOP_P_MIN, TOP_P_MAX),
+    ):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return f"{name} must be a number"
+        if not (low <= number <= high):
+            return f"{name} must be between {low:g} and {high:g}"
+    return ""
 
 
 def _load_persona_file(path: Path) -> Tuple[Optional[PersonaSpec], Optional[str]]:
@@ -301,4 +414,6 @@ __all__ = [
     "clamp_temperature",
     "clamp_top_p",
     "write_persona_template",
+    "PersonaError",
+    "validate_persona_fields",
 ]

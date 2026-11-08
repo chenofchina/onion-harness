@@ -496,6 +496,55 @@ class OnionService:
         history = self.ledger.list_history()
         return history[-1].version if history else 0
 
+    # -- personas -----------------------------------------------------------
+    def persona_list(self) -> List[Dict[str, Any]]:
+        return self.personas.to_public()
+
+    def persona_save(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or update a custom persona.
+
+        The overlay is injected at the same level as the system prompt, so this is
+        a real behaviour change - but it still cannot relax Plan or Standard,
+        because the mode contract is composed after the overlay.
+        """
+        from onion_harness.core.persona import PersonaError
+
+        try:
+            spec = self.personas.save(
+                persona_id=str(payload.get("id") or ""),
+                label=str(payload.get("label") or ""),
+                overlay=str(payload.get("overlay") or ""),
+                temperature=payload.get("temperature"),
+                top_p=payload.get("top_p"),
+                description=str(payload.get("description") or ""),
+            )
+        except PersonaError as exc:
+            raise ApiError(str(exc)) from exc
+
+        # Selecting a persona you just created is almost always the intent; leaving
+        # the old one active would make the save look like it did nothing.
+        if payload.get("activate"):
+            self.settings["active_persona"] = spec.id
+            self.settings = self.store.save_settings(self.settings)
+        return {"persona": spec.to_dict(), "personas": self.personas.to_public()}
+
+    def persona_delete(self, persona_id: str) -> Dict[str, Any]:
+        from onion_harness.core.persona import DEFAULT_PERSONA_ID, PersonaError
+
+        try:
+            self.personas.delete(str(persona_id))
+        except PersonaError as exc:
+            status = 404 if "no custom persona" in str(exc) else 400
+            raise ApiError(str(exc), status=status) from exc
+
+        # Deleting the active persona would leave the setting pointing at nothing,
+        # so it falls back to the default rather than silently resolving to it at
+        # request time with no visible change.
+        if str(self.settings.get("active_persona") or "") == str(persona_id).strip().lower():
+            self.settings["active_persona"] = DEFAULT_PERSONA_ID
+            self.settings = self.store.save_settings(self.settings)
+        return {"deleted": persona_id, "personas": self.personas.to_public()}
+
     # -- memory -------------------------------------------------------------
     def memory_stats(self) -> Dict[str, Any]:
         if self.memory is None:
@@ -970,7 +1019,7 @@ class OnionService:
         saved_url = overrides.get(str(model_raw.get("provider_id") or ""))
         if saved_url and not model_raw.get("base_url"):
             model_raw["base_url"] = saved_url
-        model = build_model_config(model_raw, self._keys())
+        model = build_model_config(model_raw, self._keys(), self.personas.get)
         if not model.model:
             raise ApiError("Select a model before sending a task.")
         if not model.api_key:
@@ -1280,7 +1329,7 @@ class OnionService:
             if context and context.get(key) is not None:
                 model_payload[key] = context[key]
 
-        model = build_model_config(model_payload, self._keys())
+        model = build_model_config(model_payload, self._keys(), self.personas.get)
         if not model.api_key:
             raise ApiError(f"No API key saved for {model.label}. Add one in Settings.", status=401)
 
@@ -1359,7 +1408,7 @@ class OnionService:
             "mode": self.settings.get("mode"),
             "elevation": self.settings.get("elevation"),
         }
-        model = build_model_config(model_payload, self._keys())
+        model = build_model_config(model_payload, self._keys(), self.personas.get)
         if not model.api_key:
             raise ApiError(f"No API key saved for {model.label}. Add one in Settings.", status=401)
 

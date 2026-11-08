@@ -375,7 +375,21 @@ carries a `temperature` and `top_p` that apply on the **next request** — no
 restart. A value you set explicitly on a conversation always wins over the
 persona's.
 
-Drop definition files into `~/.onionharness/personas/*.json`:
+**Create your own.** In the persona picker, below the presets, is *New persona*:
+name, description, the persona prompt, and two sliders for temperature and top p.
+Custom personas appear in the same list with a pencil button to edit them, and can
+be deleted. Saving with "use this persona" activates it immediately.
+
+The editor states one thing plainly, because it is the question anyone writing a
+persona prompt will have: the prompt is injected at the same level as the system
+prompt, so it carries real weight — but it cannot relax Plan or Standard. The mode
+contract is composed *after* the persona overlay, so writing "ignore all
+restrictions" changes the tone and nothing else.
+
+The `id` is fixed after creation because it names the file on disk; everything else
+is editable, so a persona can be iterated on without accumulating duplicates.
+
+Custom personas are ordinary files, so they can also be written by hand:
 
 ```json
 {

@@ -9,6 +9,7 @@ import {
   type McpToolRecord,
   type MemoryRecord,
   type OnionEvent,
+  type PersonaOption,
   type ProviderPreset,
   type RoundtableRosterEntry,
   type Revision,
@@ -31,6 +32,7 @@ import { Segmented } from './components/PopoverMenu'
 import { TaskCardHeader, TaskEditor } from './components/TaskActions'
 import { ArchiveDialog, McpDialog } from './components/McpDialog'
 import { MemoryDialog } from './components/MemoryDialog'
+import { PersonaEditor } from './components/PersonaEditor'
 import { RoundtableDialog } from './components/RoundtableDialog'
 import { RoundtableView } from './components/RoundtableView'
 import { MinutesPanel } from './components/MinutesPanel'
@@ -92,6 +94,10 @@ function Shell() {
   const [dialog, setDialog] = useState<
     'model' | 'settings' | 'history' | 'workspace' | 'archive' | 'mcp' | 'memory' | 'roundtable' | null
   >(null)
+  const [personaEditor, setPersonaEditor] = useState<{
+    open: boolean
+    initial: PersonaOption | null
+  }>({ open: false, initial: null })
   const [memories, setMemories] = useState<MemoryRecord[]>([])
   const [memoryBusy, setMemoryBusy] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -1166,6 +1172,8 @@ function Shell() {
                 personas={personas}
                 activePersonaId={settings?.active_persona || 'default'}
                 onPersonaChange={(id) => updateSetting({ active_persona: id })}
+                onNewPersona={() => setPersonaEditor({ open: true, initial: null })}
+                onEditPersona={(persona) => setPersonaEditor({ open: true, initial: persona })}
                 attachments={attachments}
                 onAttachmentsChange={setAttachments}
                 onOpenAdvanced={() => setAdvancedOpen(true)}
@@ -1317,6 +1325,23 @@ function Shell() {
           error={roundtableError}
         />
       )}
+      {personaEditor.open && (
+        <PersonaEditor
+          open
+          initial={personaEditor.initial}
+          onClose={() => setPersonaEditor({ open: false, initial: null })}
+          onSaved={(next, savedId) => {
+            setBoot((prev) => (prev ? { ...prev, personas: next } : prev))
+            if (savedId) {
+              // A save that immediately activates is the common case; keep the
+              // local settings in step so the chip label updates at once.
+              setSettings((prev) => (prev ? { ...prev, active_persona: savedId } : prev))
+            }
+            refreshBoot()
+          }}
+        />
+      )}
+
       {dialog === 'memory' && (
         <MemoryDialog
           open

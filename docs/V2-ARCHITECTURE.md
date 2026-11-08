@@ -271,9 +271,28 @@ engine options → provider.chat_completion(temperature=…, top_p=…)
 ChangeKind.SELECT_PERSONA = "select_persona"
 ```
 
+### 自定义人格（补充实现）
+
+`PersonaLibrary.save/delete` 直接把人格写成 `<data_dir>/personas/<id>.json`，同时就地
+更新内存列表，所以保存即生效、无需重启。GUI 编辑器和手写文件走**同一条校验路径**
+（`validate_persona_fields`），不会因为是从界面进来的就放宽。
+
+这里修掉一个只有自定义人格才会暴露的缺陷：`build_model_config` 原本用 `persona_for()`
+从内置表解析人格，而磁盘上的人格它看不见。结果是一个自定义人格**顶着正确的名字、用着
+default 的温度**在跑——标签说一套、采样是另一套，不看记录根本发现不了。现在
+`build_model_config` 接受 `persona_resolver`，服务层的三个调用点都传入
+`self.personas.get`。
+
+边界：内置人格不可删除、不能被同名 id 覆盖；删除当前激活的人格会回退到 default，
+而不是让设置指向一个已不存在的名字。
+
 ### UI
 
 侧栏模型选择器旁边加一个下拉，显示当前人格及其采样参数（如 `Aggressive · T0.35 / P0.9`）。切换即时生效。
+
+人格弹层里，预设列表下方是 **New persona**；自定义人格带铅笔按钮可编辑、可删除。
+编辑器包含名字、描述、人格提示词（与系统提示词同级注入）、temperature 与 top_p 两个
+滑块，以及「保存后立即使用」。`id` 创建后只读——它决定磁盘文件名，改动会留下孤儿文件。
 
 ---
 

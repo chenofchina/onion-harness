@@ -7,6 +7,7 @@ import {
   Maximize2,
   Minimize2,
   Paperclip,
+  Pencil,
   Plus,
   Settings2,
   ShieldCheck,
@@ -45,6 +46,8 @@ type Props = {
   personas: PersonaOption[]
   activePersonaId: string
   onPersonaChange: (id: string) => void
+  onNewPersona: () => void
+  onEditPersona: (persona: PersonaOption) => void
   attachments: string[]
   onAttachmentsChange: (paths: string[]) => void
   onOpenAdvanced: () => void
@@ -74,6 +77,8 @@ export function Composer({
   personas,
   activePersonaId,
   onPersonaChange,
+  onNewPersona,
+  onEditPersona,
   attachments,
   onAttachmentsChange,
   onOpenAdvanced,
@@ -402,19 +407,47 @@ export function Composer({
         <div className="popover-section">
           <span className="popover-section__label">Persona</span>
           {personas.map((item) => (
-            <MenuItem
-              key={item.id}
-              label={`${item.label} · ${formatSampling(item)}`}
-              hint={item.description || undefined}
-              selected={item.id === activePersonaId}
-              onClick={() => {
-                onPersonaChange(item.id)
-                setMenu(null)
-              }}
-            />
+            <div key={item.id} className="persona-row">
+              <MenuItem
+                label={`${item.label} · ${formatSampling(item)}`}
+                hint={item.description || undefined}
+                selected={item.id === activePersonaId}
+                onClick={() => {
+                  onPersonaChange(item.id)
+                  setMenu(null)
+                }}
+              />
+              {!item.builtin && (
+                <button
+                  type="button"
+                  className="persona-row__edit"
+                  title="Edit this persona"
+                  aria-label={`Edit ${item.label}`}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onEditPersona(item)
+                    setMenu(null)
+                  }}
+                >
+                  <Pencil size={12} />
+                </button>
+              )}
+            </div>
           ))}
+          <button
+            type="button"
+            className="persona-new"
+            onClick={() => {
+              onNewPersona()
+              setMenu(null)
+            }}
+          >
+            <Plus size={13} />
+            <span>New persona</span>
+          </button>
           <span className="popover-section__hint">
-            A persona changes tone and sampling only. Plan and Standard approval rules
+            A persona changes the prompt, temperature and top&nbsp;p. The prompt sits at
+            the same level as the system prompt, but Plan and Standard approval rules
             still apply.
           </span>
         </div>

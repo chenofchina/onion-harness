@@ -1114,8 +1114,18 @@ def _resolve_sampling(explicit: Any, persona_value: float, clamp) -> float:
         return clamp(persona_value)
 
 
-def build_model_config(raw: Dict[str, Any], api_keys: Optional[Dict[str, str]] = None) -> ModelConfig:
-    """Normalise a GUI payload into a :class:`ModelConfig`."""
+def build_model_config(
+    raw: Dict[str, Any],
+    api_keys: Optional[Dict[str, str]] = None,
+    persona_resolver: Optional[Callable[[Optional[str]], Any]] = None,
+) -> ModelConfig:
+    """Normalise a GUI payload into a :class:`ModelConfig`.
+
+    ``persona_resolver`` lets the caller resolve *custom* personas, which live on
+    disk and are therefore invisible to the built-in table. Without it a custom
+    persona's sampling was silently replaced by the default persona's - the task
+    ran with the wrong temperature while the GUI showed the right name.
+    """
     provider_id = str(raw.get("provider_id") or "deepseek")
     preset = preset_for(provider_id)
     wire_format = raw.get("wire_format") or (preset.format if preset else "openai")
@@ -1125,7 +1135,15 @@ def build_model_config(raw: Dict[str, Any], api_keys: Optional[Dict[str, str]] =
     keys = api_keys or {}
     api_key = str(raw.get("api_key") or keys.get(provider_id) or "").strip()
 
-    persona = persona_for(raw.get("persona_id"))
+    persona_id = raw.get("persona_id")
+    persona = None
+    if persona_resolver is not None:
+        try:
+            persona = persona_resolver(persona_id)
+        except Exception:  # noqa: BLE001 - fall back to the built-in table
+            persona = None
+    if persona is None:
+        persona = persona_for(persona_id)
     # Sampling resolution, in strict priority order:
     #   1. a value the caller passed explicitly for this request,
     #   2. the active persona's value,

@@ -150,6 +150,15 @@ def _make_handler(service: OnionService, static_dir: Optional[Path]):
                 return self._json(service.roundtable_seat_thoughts(match.group(1)))
             if method == "GET" and path == "/api/mcp":
                 return self._json({"tools": service.mcp_tools()})
+            if method == "GET" and path == "/api/personas":
+                return self._json({"personas": service.persona_list()})
+            if method == "POST" and path == "/api/personas":
+                return self._json(service.persona_save(body), status=201)
+            match = re.match(r"^/api/personas/([^/]+)$", path)
+            if match and method == "DELETE":
+                return self._json(service.persona_delete(match.group(1)))
+            if match and method in ("POST", "PATCH"):
+                return self._json(service.persona_save({**body, "id": match.group(1)}))
             if method == "GET" and path == "/api/memory":
                 return self._json(
                     {"stats": service.memory_stats(), "memories": service.memory_list()}

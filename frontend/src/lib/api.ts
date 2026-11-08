@@ -491,6 +491,25 @@ export const api = {
     request<FileView>(`/workspace/file?path=${encodeURIComponent(path)}`),
   taskFiles: (taskId: string) =>
     request<{ task_id: string; changes: FileChange[]; note?: string }>(`/tasks/${taskId}/files`),
+  personaList: () => request<{ personas: PersonaOption[] }>('/personas'),
+  savePersona: (payload: {
+    id: string
+    label: string
+    overlay: string
+    temperature: number
+    top_p: number
+    description?: string
+    activate?: boolean
+  }) =>
+    request<{ persona: PersonaOption; personas: PersonaOption[] }>('/personas', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  deletePersona: (id: string) =>
+    request<{ deleted: string; personas: PersonaOption[] }>(
+      `/personas/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
   uiAction: (taskId: string, actionId: string) =>
     request<TaskRecord>(`/tasks/${taskId}/ui-action`, {
       method: 'POST',
