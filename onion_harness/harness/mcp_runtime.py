@@ -37,13 +37,20 @@ class McpToolClient:
     async def _ensure(self) -> asyncio.subprocess.Process:
         if self._process is not None and self._process.returncode is None:
             return self._process
+        # find_python, not sys.executable: a frozen build's executable is the
+        # harness itself, so this used to ask Onion to run an MCP script as if it
+        # were a command-line argument. The silent spawn flags matter too - an MCP
+        # server is a console process and would flash a window on every call.
+        from onion_harness.core.process import find_python, spawn_kwargs
+
         self._process = await asyncio.create_subprocess_exec(
-            sys.executable or "python",
+            find_python(),
             str(self.script),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             cwd=str(self.script.parent),
+            **spawn_kwargs(),
         )
         await self._call({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
         return self._process

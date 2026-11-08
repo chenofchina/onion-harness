@@ -436,16 +436,28 @@ Before a **destructive** command reaches the sandbox, a cheap model reviews it
 and answers `PASS` or `REJECT`. Reads and harmless writes skip review entirely,
 so the gate costs nothing on ordinary work.
 
-Three rules hold regardless of configuration:
+**Three outcomes, three responses:**
 
-* Review is a gate **in front of** the sandbox and the approval card, never a
-  replacement. A passed review in Standard mode still shows the approval card.
-* When the reviewer cannot answer — no key, timeout, unusable reply — the call is
-  refused (`fail_closed`). The message says the *reviewer was unavailable*, not
-  that the code was dangerous, so a broken service never teaches you to ignore
-  the warning.
-* The reviewer sees the code only, never the conversation, so it cannot be talked
-  into approving something.
+| Reviewer says | What happens |
+|---|---|
+| PASS | Runs immediately, no prompt. |
+| REJECT | A card asks you, showing the reviewer's reason. Approve to run, deny to stop. |
+| unavailable | A card asks you, and says the reviewer could not be reached — not that your code is dangerous. |
+
+A cleared call is never re-asked. A confirmation dialog on work a reviewer just
+approved is how people learn to click *Approve* without reading, which defeats the
+purpose of having a reviewer at all. The reviewer is a cheap model and a filter,
+not an authority — so anything it flags goes to a human for the real decision.
+
+Two rules do not bend:
+
+* **Plan mode is checked first**, before the reviewer. It refuses writes
+  structurally; no verdict can lift it.
+* **The reviewer sees the code only**, never the conversation, so it cannot be
+  talked into approving something.
+
+With no reviewer configured, Standard mode's approval card is the only gate left
+and stays in place.
 
 Configure it in Settings or via `auto_review` in the settings payload.
 

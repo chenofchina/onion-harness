@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tempfile
 import time
 from abc import ABC
@@ -192,7 +193,15 @@ def clean_env(base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
 
 
 def find_python() -> str:
-    return os.environ.get("ONION_PYTHON") or shutil.which("python") or "python"
+    """The interpreter for model-supplied code. Delegates to core.
+
+    Kept as a re-export because the sandbox is where callers historically looked;
+    the implementation moved to :mod:`onion_harness.core.process` so the harness
+    layer can use it without importing outward.
+    """
+    from onion_harness.core.process import find_python as _find_python
+
+    return _find_python()
 
 
 def normalise_argv(command: Sequence[str]) -> List[str]:

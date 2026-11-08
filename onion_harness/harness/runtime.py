@@ -192,6 +192,11 @@ class OnionRuntime:
         # sandbox. Both are optional so a bare runtime still works.
         self._personas = personas
         self._review_gate = reviewer
+        # Filled by _review_call so an approval card can say why it appeared.
+        self._review_note = ""
+        # How long to wait for a human. 30 minutes for the app; tests set it low so
+        # a missing stub fails fast instead of stalling the suite.
+        self.approval_timeout = 1800.0
         # The planner itself is built per task (it needs that task's model), so this
         # flag only records whether planning is available at all - the prompt is
         # written from it.
@@ -826,21 +831,53 @@ class OnionRuntime:
         async def _invoke(args: Dict[str, Any]) -> str:
             args = args or {}
             code = str(args.get("code") or "")
+            mode = model.mode if model else None
 
-            # Automatic review runs first: it is a cheap gate in front of the
-            # approval card, not a replacement for it. A rejected snippet never
-            # reaches the user as a card, and never reaches the sandbox.
-            blocked = await self._review_call(executor, code, session)
-            if blocked is not None:
-                return blocked
+            # Plan mode is a structural refusal, not a judgement call: it is checked
+            # before anything else so no later decision can bypass it.
+            from onion_harness.harness.modes import plan_mode_violation, requires_approval
 
-            # Approval gate (Standard mode) and the Plan-mode write refusal both key off
-            # the same write detection, so the two never disagree.
-            from onion_harness.harness.modes import requires_approval
+            violation = plan_mode_violation(mode, code)
+            if violation:
+                return violation
 
-            if session is not None and requires_approval(
-                model.mode if model else None, code
-            ):
+            # The safety review is the gate. Three outcomes, three responses:
+            #
+            #   pass         - run it. Asking the user to confirm work the reviewer
+            #                  just cleared is the friction that makes people turn
+            #                  the feature off, and it trains them to click approve
+            #                  without reading.
+            #   reject       - ask the user. The reviewer is a cheap model; it is a
+            #                  filter, not an authority. A human gets the final word
+            #                  on anything it flags.
+            #   unavailable  - ask the user too, and say that the reason is the
+            #                  reviewer, not the code.
+            #
+            # With no reviewer configured there is nothing to clear the call, so the
+            # Standard-mode approval card is the only gate left and stays in place.
+            decision = await self._review_call(executor, code, session)
+
+            if decision == "pass":
+                outcome = await executor.execute(args, ctx)
+                return outcome.model_text()
+
+            if decision in ("reject", "unavailable"):
+                # Both mean "a human should look". The card carries the reviewer's
+                # verdict so the user is not deciding blind.
+                approved = await self._request_approval(
+                    executor, args, session, reason=self._review_note
+                )
+                if not approved:
+                    return (
+                        "The user declined this tool call. Do not retry it; ask how "
+                        "they would like to proceed instead."
+                    )
+                outcome = await executor.execute(args, ctx)
+                return outcome.model_text()
+
+            # No verdict: either review is disabled, or the snippet is read-only and
+            # never needed one. Standard mode still asks for writes here.
+            if session is not None and requires_approval(mode, code):
                 approved = await self._request_approval(executor, args, session)
                 if not approved:
                     return (
@@ -853,29 +890,42 @@ class OnionRuntime:
 
         return _invoke
 
-    async def _review_call(self, executor, code: str, session: Optional[TaskSession]) -> Optional[str]:
-        """Run the safety reviewer. Returns a refusal message, or None to proceed.
+    async def _review_call(self, executor, code: str, session: Optional[TaskSession]) -> str:
+        """Run the safety reviewer.
+
+        Returns one of four strings:
+
+        ``"pass"``          the reviewer cleared it - run without asking
+        ``"reject"``        the reviewer flagged it - a human decides
+        ``"unavailable"``   the reviewer could not answer - a human decides, and the
+                            card says why, so the code is not blamed for an outage
+        ``"skip"``          no verdict exists: review is off, or the snippet was
+                            read-only and never needed one
 
         Emits ``review-decided`` through the approval listener, because this runs
         inside the tool call where the event generator is already blocked.
         """
+        self._review_note = ""
         gate = self._review_gate
         if gate is None or session is None:
-            return None
+            return "skip"
         try:
             result = await gate.review(code, tool_name=executor.tool_name)
         except Exception as exc:  # noqa: BLE001 - the gate must not break a run
             logger.debug("review gate crashed", exc_info=True)
-            # A crash in our own gate is treated the same as an unreachable
-            # reviewer: fail closed, and say so honestly.
+            # A crash in our own gate is treated like an unreachable reviewer: a
+            # human decides, and the reason is stated as ours, not the code's.
             from onion_harness.harness.review import ReviewResult
 
             result = ReviewResult(
-                "reject", reason=f"review crashed: {exc}", reviewer_model=""
+                "reject",
+                reason=f"review crashed: {exc}",
+                reviewer_model="",
+                unavailable=True,
             )
 
         if result.skipped:
-            return None
+            return "skip"
 
         payload = {
             "call_id": new_id("rev"),
@@ -888,8 +938,16 @@ class OnionRuntime:
         self._record_review(session, payload)
 
         if result.approved:
-            return None
-        return result.blocked_message()
+            return "pass"
+
+        # Wording differs so the approval card can tell a flagged snippet from a
+        # broken reviewer; a user deciding on the former is making a real judgement.
+        self._review_note = (
+            f"reviewer could not check this ({result.reason})"
+            if result.unavailable
+            else f"safety review flagged this: {result.reason or 'destructive operation'}"
+        )
+        return "unavailable" if result.unavailable else "reject"
 
     def _record_review(self, session: TaskSession, payload: Dict[str, Any]) -> None:
         event_obj = event(
@@ -903,8 +961,18 @@ class OnionRuntime:
             except Exception:  # noqa: BLE001
                 logger.debug("review listener failed", exc_info=True)
 
-    async def _request_approval(self, executor, args: Dict[str, Any], session: TaskSession) -> bool:
+    async def _request_approval(
+        self,
+        executor,
+        args: Dict[str, Any],
+        session: TaskSession,
+        reason: str = "",
+    ) -> bool:
         """Ask the user, out of band.
+
+        ``reason`` carries the reviewer's verdict when the card exists because of
+        one. Without it the user sees a bare "approve this?" with no explanation of
+        why they are being asked, which invites reflexive clicking.
 
         The event generator is blocked inside the tool call at this point (the
         engine is awaiting the tool), so an approval event cannot be yielded
@@ -929,11 +997,14 @@ class OnionRuntime:
             "preview": args.get("description") or executor.preview(str(args.get("code") or "")),
             "code": str(args.get("code") or "")[:1200],
             "status": "awaiting",
+            # Why this needs a human: a reviewer verdict, or empty when Standard
+            # mode is simply asking about a write.
+            "reason": reason,
         }
         self._record_approval(session, payload)
 
         try:
-            return await _asyncio.wait_for(future, timeout=1800)
+            return await _asyncio.wait_for(future, timeout=self.approval_timeout)
         except _asyncio.TimeoutError:
             return False
         finally:

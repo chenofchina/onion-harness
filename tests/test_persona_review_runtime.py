@@ -102,6 +102,8 @@ class _Base(unittest.TestCase):
         runtime.set_approval_listener(
             lambda _task_id, payload: self.out_of_band.append(payload)
         )
+        # A missing approval stub must fail the test, not stall it for 30 minutes.
+        runtime.approval_timeout = 2.0
         return runtime
 
     def _run(self, runtime, prompt="do it", **model_overrides):
@@ -169,10 +171,20 @@ class ReviewIntegrationTest(_Base):
         gate = ReviewGate(ReviewConfig(), provider_factory=lambda _c: reviewer)
         return gate, reviewer
 
-    def test_reject_blocks_before_the_executor_runs(self):
+    def test_a_reject_asks_the_user_and_refusal_blocks_the_call(self):
+        """A flagged snippet escalates to a human rather than being auto-blocked.
+
+        The reviewer is a cheap model: it filters, it does not adjudicate. The user
+        declining is what actually stops the call.
+        """
         gate, reviewer = self._gate("REJECT")
         runtime = self._runtime(reviewer=gate)
-        events = self._run(runtime, mode="strict")
+
+        async def _decline(*_args, **_kwargs):
+            return False
+
+        runtime._request_approval = _decline
+        events = self._run(runtime, mode="standard")
 
         decisions = [item for item in self.out_of_band if item["type"] == "review-decided"]
         self.assertEqual(len(decisions), 1)
@@ -180,12 +192,10 @@ class ReviewIntegrationTest(_Base):
         self.assertFalse(decisions[0]["payload"]["unavailable"])
         self.assertTrue(reviewer.calls)
 
-        # The executor never ran. A blocked call still produces a tool result -
-        # that is how the model is told - but the content is the refusal, not
-        # command output.
+        # Declined, so the tool result carries the refusal, not command output.
         results = [ev for ev in events if ev.type is EventType.TOOL_RESULT]
         self.assertEqual(len(results), 1)
-        self.assertIn("Blocked by automatic safety review", results[0].payload["content"])
+        self.assertIn("declined", results[0].payload["content"])
 
     def test_pass_lets_the_executor_run(self):
         # Strict mode is used here so the run does not block on an approval card;
@@ -198,23 +208,107 @@ class ReviewIntegrationTest(_Base):
         self.assertEqual(decisions[0]["payload"]["decision"], "pass")
         self.assertIn(EventType.TOOL_RESULT, [ev.type for ev in events])
 
-    def test_standard_mode_still_asks_after_a_pass(self):
-        """Review is a gate in front of approval, not a replacement for it."""
+    def test_a_pass_runs_without_asking_the_user(self):
+        """The review is the gate: once cleared, asking again is pure friction.
+
+        An approval card here would train the user to click Approve without
+        reading, which is the opposite of what the review is for.
+        """
         gate, _ = self._gate("PASS")
         runtime = self._runtime(reviewer=gate)
         asked = []
 
-        async def _decline(*_args, **_kwargs):
+        async def _record(*_args, **_kwargs):
             asked.append(True)
+            return True
+
+        runtime._request_approval = _record
+        events = self._run(runtime, mode="standard")
+        self.assertEqual(asked, [], "a cleared snippet must not prompt the user")
+        self.assertIn(EventType.TOOL_RESULT, [ev.type for ev in events])
+
+    def test_a_reject_asks_the_user_instead_of_blocking(self):
+        """The reviewer is a cheap model, not an authority: a human gets the call."""
+        gate, _ = self._gate("REJECT")
+        runtime = self._runtime(reviewer=gate)
+        asked = []
+
+        async def _approve(*_args, **_kwargs):
+            asked.append(_kwargs.get("reason", ""))
+            return True
+
+        runtime._request_approval = _approve
+        events = self._run(runtime, mode="standard")
+        self.assertEqual(len(asked), 1, "a flagged snippet must reach the user")
+        self.assertIn("flagged", asked[0])
+        # Approved by the human, so it ran.
+        self.assertIn(EventType.TOOL_RESULT, [ev.type for ev in events])
+
+    def test_a_reject_declined_by_the_user_does_not_run(self):
+        gate, _ = self._gate("REJECT")
+        runtime = self._runtime(reviewer=gate)
+
+        async def _decline(*_args, **_kwargs):
             return False
 
         runtime._request_approval = _decline
         events = self._run(runtime, mode="standard")
-        self.assertTrue(asked, "a passed review must still reach the approval card")
-        # Declined: the tool result exists but carries the refusal, not output.
         results = [ev for ev in events if ev.type is EventType.TOOL_RESULT]
         self.assertTrue(results)
         self.assertIn("declined", results[0].payload["content"])
+
+    def test_a_broken_reviewer_asks_and_says_it_was_the_reviewer(self):
+        """An outage must not read as "your code is dangerous"."""
+        reviewer = _StubReviewer(None)
+        reviewer.answer = None
+
+        class Broken:
+            async def chat_completion(self, messages, tools=None, **kwargs):
+                raise RuntimeError("review service down")
+
+        gate = ReviewGate(ReviewConfig(), provider_factory=lambda _c: Broken())
+        runtime = self._runtime(reviewer=gate)
+        asked = []
+
+        async def _approve(*_args, **kwargs):
+            asked.append(kwargs.get("reason", ""))
+            return True
+
+        runtime._request_approval = _approve
+        self._run(runtime, mode="standard")
+        self.assertEqual(len(asked), 1)
+        self.assertIn("could not check", asked[0])
+        self.assertNotIn("flagged", asked[0])
+
+    def test_plan_mode_still_refuses_a_write_without_asking_anyone(self):
+        """Plan is a structural refusal, not a judgement the reviewer can lift."""
+        gate, _ = self._gate("PASS")
+        runtime = self._runtime(reviewer=gate)
+        asked = []
+
+        async def _record(*_args, **_kwargs):
+            asked.append(True)
+            return True
+
+        runtime._request_approval = _record
+        events = self._run(runtime, mode="plan")
+        self.assertEqual(asked, [], "Plan mode must not offer to run a write")
+        results = [ev for ev in events if ev.type is EventType.TOOL_RESULT]
+        self.assertTrue(results)
+        self.assertIn("Plan mode", results[0].payload["content"])
+
+    def test_no_reviewer_keeps_the_standard_approval_card(self):
+        """With nothing to clear the call, approval is the only gate left."""
+        runtime = self._runtime(reviewer=None)
+        asked = []
+
+        async def _approve(*_args, **_kwargs):
+            asked.append(True)
+            return True
+
+        runtime._request_approval = _approve
+        self._run(runtime, mode="standard")
+        self.assertEqual(len(asked), 1)
 
     def test_read_only_snippet_skips_review_entirely(self):
         self.script = [

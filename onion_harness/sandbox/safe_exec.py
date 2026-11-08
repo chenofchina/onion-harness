@@ -31,64 +31,17 @@ from onion_harness.core.primitives import Result
 
 _WINDOWS = os.name == "nt"
 
-# Documented constants. Declared literally so the code works on a non-Windows
-# interpreter reading it, and so the value is visible in review.
-CREATE_NO_WINDOW = 0x08000000
-CREATE_NEW_PROCESS_GROUP = 0x00000200
-DETACHED_PROCESS = 0x00000008
+from onion_harness.core.process import (  # noqa: F401 - re-exported
+    CREATE_NEW_PROCESS_GROUP,
+    CREATE_NO_WINDOW,
+    cmd_argv,
+    kill_tree,
+    powershell_argv,
+    spawn_kwargs,
+)
 
 DEFAULT_TIMEOUT = 300.0  # five minutes, per the execution contract
 MAX_TIMEOUT = 3600.0
-
-
-def spawn_kwargs(*, new_group: bool = True) -> Dict[str, Any]:
-    """The keyword arguments every Windows child process must be started with.
-
-    Returned separately from the executor so the async launcher and the blocking
-    executor cannot drift: both call this.
-    """
-    if not _WINDOWS:
-        # POSIX has no windows to hide; a new session lets us kill the group.
-        return {"start_new_session": True} if new_group else {}
-
-    creationflags = CREATE_NO_WINDOW
-    if new_group:
-        # CREATE_NO_WINDOW cannot be combined with DETACHED_PROCESS, but it does
-        # combine with CREATE_NEW_PROCESS_GROUP, which is what lets taskkill /T
-        # address the tree.
-        creationflags |= CREATE_NEW_PROCESS_GROUP
-
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-
-    return {"creationflags": creationflags, "startupinfo": startupinfo}
-
-
-def powershell_argv(script_path: str) -> List[str]:
-    """PowerShell invocation that cannot prompt, profile, or show a window.
-
-    ``-NonInteractive`` stops a cmdlet from waiting on input forever (which would
-    look like a hung task), ``-NoProfile`` keeps the run reproducible and fast,
-    and ``-WindowStyle Hidden`` is belt and braces alongside CREATE_NO_WINDOW.
-    """
-    return [
-        "powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        script_path,
-    ]
-
-
-def cmd_argv(script_path: str) -> List[str]:
-    return ["cmd.exe", "/d", "/c", script_path]
-
 
 def _clamp_timeout(value: Any) -> float:
     try:
@@ -267,8 +220,14 @@ def _ms(started: float) -> int:
 
 
 def python_argv(script_path: str) -> List[str]:
-    """Python invocation with unbuffered output, so streaming shows progress."""
-    return [sys.executable or "python", "-u", str(script_path)]
+    """Python invocation with unbuffered output, so streaming shows progress.
+
+    Delegates to core, which knows that ``sys.executable`` is the harness binary in
+    a frozen build.
+    """
+    from onion_harness.core.process import python_argv as _python_argv
+
+    return _python_argv(str(script_path))
 
 
 __all__ = [

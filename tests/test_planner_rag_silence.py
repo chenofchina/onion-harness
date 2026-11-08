@@ -504,26 +504,26 @@ class SpawnFlagTest(unittest.TestCase):
     """The red line: no console window, ever."""
 
     def test_no_window_flag_is_requested(self):
-        with mock.patch("onion_harness.sandbox.safe_exec._WINDOWS", True):
+        with mock.patch("onion_harness.core.process._WINDOWS", True):
             kwargs = spawn_kwargs()
             flags = kwargs["creationflags"]
             self.assertTrue(flags & CREATE_NO_WINDOW, "CREATE_NO_WINDOW must be set")
             self.assertTrue(flags & CREATE_NEW_PROCESS_GROUP, "tree-kill needs a group")
 
     def test_startupinfo_hides_the_window(self):
-        with mock.patch("onion_harness.sandbox.safe_exec._WINDOWS", True):
+        with mock.patch("onion_harness.core.process._WINDOWS", True):
             info = spawn_kwargs()["startupinfo"]
             self.assertTrue(info.dwFlags & 1)  # STARTF_USESHOWWINDOW
             self.assertEqual(info.wShowWindow, 0)  # SW_HIDE
 
     def test_no_group_variant_still_hides(self):
-        with mock.patch("onion_harness.sandbox.safe_exec._WINDOWS", True):
+        with mock.patch("onion_harness.core.process._WINDOWS", True):
             flags = spawn_kwargs(new_group=False)["creationflags"]
             self.assertTrue(flags & CREATE_NO_WINDOW)
             self.assertFalse(flags & CREATE_NEW_PROCESS_GROUP)
 
     def test_posix_uses_a_new_session(self):
-        with mock.patch("onion_harness.sandbox.safe_exec._WINDOWS", False):
+        with mock.patch("onion_harness.core.process._WINDOWS", False):
             self.assertEqual(spawn_kwargs(), {"start_new_session": True})
             self.assertEqual(spawn_kwargs(new_group=False), {})
 

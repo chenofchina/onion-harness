@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Archive, ArrowUp, Check, Pencil, ShieldCheck, X } from 'lucide-react'
+import { Archive, ArrowUp, Check, Pencil, ShieldAlert, ShieldCheck, X } from 'lucide-react'
 import type { OnionEvent, TaskRecord } from '../lib/api'
 
 /** Header row for a user task block, with edit + archive actions. */
@@ -99,7 +99,11 @@ export function ApprovalCard({
         <span className="card__header-icon" style={{ color: 'var(--md-sys-color-tertiary)' }}>
           <ShieldCheck size={17} />
         </span>
-        <span className="card-change__title">Approval required</span>
+        {/* The reviewer's verdict is the reason this card exists, so it is stated
+            rather than left for the user to infer from the code. */}
+        <span className="card-change__title">
+          {payload.reason ? 'Needs your decision' : 'Approval required'}
+        </span>
         <span className="impact-chip">{payload.label || payload.name}</span>
         <span className="spacer" style={{ flex: 1 }} />
         {!pending && (
@@ -109,6 +113,12 @@ export function ApprovalCard({
         )}
       </div>
       <div className="card-approval__body">
+        {payload.reason && (
+          <div className="card-change__warn" style={{ marginBottom: 8 }}>
+            <ShieldAlert size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>{payload.reason}</span>
+          </div>
+        )}
         <div className="card-change__reason">{payload.preview || payload.name}</div>
         {payload.code && (
           <pre className="code-block card-approval__code">{payload.code}</pre>

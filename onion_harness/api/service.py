@@ -235,6 +235,14 @@ class OnionService:
         info["memory_enabled"] = self.memory is not None
         info["web_search"] = self.web_search_config.to_public()
         info["frozen"] = bool(getattr(__import__("sys"), "frozen", False))
+        # Which interpreter the Python executor will use. In a frozen build the
+        # wrong answer is the harness binary itself, and that only shows up here.
+        try:
+            from onion_harness.core.process import find_python
+
+            info["python_interpreter"] = find_python()
+        except Exception as exc:  # noqa: BLE001
+            info["python_interpreter"] = f"error: {exc}"
         return info
 
     def web_search_status(self) -> Dict[str, Any]:

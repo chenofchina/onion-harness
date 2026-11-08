@@ -458,6 +458,24 @@ API 的 Key 会随二进制分发而被逆向，本地服务没有这个问题�
 **关闭即无工具**：`enabled=False` 时 `build_web_search_tool` 返回 `None`，工具和
 `SEARCH_PROMPT_HINT` 一起消失。告诉模型它有搜索能力而实际没有，比什么都不说更糟。
 
+**审查语义（修正）**：初版把审查实现成"审批卡之前的一道闸门"，于是审查通过后
+Standard 模式**仍然弹审批卡**。这产生两个问题：对已放行的操作再问一次是纯粹的摩擦；
+而且用户会养成不看内容直接点「批准」的习惯，恰好破坏审查存在的意义。
+
+现在改成三态：
+
+| 结论 | 行为 |
+|---|---|
+| `pass` | 直接执行，不打扰用户 |
+| `reject` | 弹审批卡，附带审查理由，由人决定 |
+| `unavailable` | 弹审批卡，并说明是审查服务不可用，而不是代码有问题 |
+
+审查模型是便宜的过滤器，不是权威——它标记的东西该由人看。`pass` 不重复问，是因为
+重复问会训练用户盲点批准。
+
+**Plan 模式在审查之前检查**：`plan_mode_violation` 是结构性拒绝，任何审查结论都不能
+解除它。没有审查模型时，Standard 的审批卡是唯一闸门，保持不变。
+
 **不经审批与审查**：Auto-Review 的职责是在沙箱前拦代码执行；搜索是用户已开启的
 只读网络调用，为每次查询弹确认框会让功能不可用。
 
@@ -482,6 +500,28 @@ API 的 Key 会随二进制分发而被逆向，本地服务没有这个问题�
 百度结果页，输出与外部服务**同一 shape**（`{answer, top}`），所以解析层无感知。外部优先，
 因为聚合器有跨引擎摘要；内置兜底，因为"本机什么都没装"不该等于"搜索不可用"。状态里的
 `builtin` 计入 available。两条路都失败仍抛错——fail-closed 不因回退而放松。
+
+## 四点五五、解释器解析（补充实现）
+
+`core/process.py`。这一处是**只在打包后出现**的严重缺陷：Python 执行器用
+`sys.executable` 拼命令行，而冻结构建里它是 `OnionHarness.exe` 本身。于是命令变成
+`[OnionHarness.exe, "-u", script.py]`——脚本路径被当成 Onion 自己的命令行参数，Python
+从头到尾没被调用。
+
+源码环境完全正常（`sys.executable` 就是 venv 的 python），所以这缺陷只在发布产物里出现。
+
+修法：`find_python()` 按序判定——显式 `ONION_PYTHON` 覆盖 → 非冻结且看起来像 Python 的
+`sys.executable`（venv 里有用户的包，优先级高）→ PATH 里的 `python`/`python3`/`py`。
+
+同类问题还有三处，一并修：MCP runtime（用 harness exe 跑 MCP 脚本）、`safe_exec.python_argv`、
+搜索服务的 `-m` 回退。
+
+放在 core 而不是 sandbox，是因为 harness 层也需要它——架构守卫当场拦下了我第一次的错误
+实现（harness 导入了 sandbox）。`sandbox/api.py` 保留 `find_python` 作为转发，不再有第二份
+实现。
+
+验证方式：`GET /api/diagnostics` 暴露 `python_interpreter`，在冻结版里直接看它指向哪个
+可执行文件。
 
 ## 四点六、打包后才会暴露的三个缺陷（补充实现）
 

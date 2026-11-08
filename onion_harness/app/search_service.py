@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from onion_harness.sandbox.safe_exec import spawn_kwargs
+from onion_harness.core.process import spawn_kwargs
 
 logger = logging.getLogger("onion.searchsvc")
 
@@ -246,7 +246,7 @@ class SearchService:
                 process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 # A service that ignores terminate is left to the tree kill.
-                from onion_harness.sandbox.safe_exec import kill_tree
+                from onion_harness.core.process import kill_tree
 
                 kill_tree(process.pid)
         except Exception:  # noqa: BLE001 - teardown is best effort
@@ -276,7 +276,9 @@ class SearchService:
                 import importlib.util
 
                 if importlib.util.find_spec(module) is not None:
-                    return [sys.executable or "python", "-m", module]
+                    from onion_harness.core.process import find_python
+
+                    return [find_python(), "-m", module]
             except Exception:  # noqa: BLE001
                 continue
         return None

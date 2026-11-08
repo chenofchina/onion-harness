@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List
 
 from onion_harness.plugins.base import BaseExecutor
+from onion_harness.core.process import find_python
 
 
 class PythonExecutor(BaseExecutor):
@@ -41,7 +42,10 @@ class PythonExecutor(BaseExecutor):
     def build_command(
         self, script_path: Path, timeout_seconds: float, cwd: Path
     ) -> List[str]:
-        return [sys.executable or "python", "-u", str(script_path)]
+        # Not sys.executable: in a frozen build that is the harness binary, so the
+        # script path would be handed to Onion itself as an argument instead of to
+        # an interpreter.
+        return [find_python(), "-u", str(script_path)]
 
 
 __all__ = ["PythonExecutor"]
